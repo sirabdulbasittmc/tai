@@ -1,0 +1,177 @@
+import { Router, Request, Response } from 'express';
+import { login, logout, changePassword, createUser, resetPassword, validatePasswordComplexity } from '../services/authService';
+import { requireAuth, requireAdmin, TOKEN_COOKIE } from '../middleware/auth';
+import { validateSeatAvailability } from '../services/licenseService';
+import { isValidUserType } from '../config/userTypes';
+import { getConfig } from '../services/configService';
+import { sendInvitation, setupPassword, validateInviteToken, sendPasswordReset } from '../services/inviteService';
+import prisma from '../db/prisma';
+
+const router = Router();
+
+// ─── Login (email/empcode + password) ──────────────────────────
+
+router.post('/login', async (req: Request, res: Response) => {
+  const { email, empcode, password } = req.body;
+  const identifier = email || empcode;
+
+  if (!identifier || !password) {
+    res.status(400).json({ error: 'email (or empcode) and password are required' });
+    return;
+  }
+
+  const result = await login(identifier, password, {
+    userAgent: req.headers['user-agent'] as string,
+    ip: req.ip,
+  });
+
+  if (!result.success) {
+    res.status(result.locked ? 423 : 401).json({ error: result.error });
+    return;
+  }
+
+  res.cookie(TOKEN_COOKIE, result.token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 72 * 60 * 60 * 1000,
+  });
+
+  res.json({ success: true, user: result.user });
+});
+
+// ─── Logout ────────────────────────────────────────────────────
+
+router.post('/logout', requireAuth, async (req: Request, res: Response) => {
+  const token = req.cookies?.[TOKEN_COOKIE];
+  if (token) await logout(token);
+  res.clearCookie(TOKEN_COOKIE);
+  res.json({ success: true });
+});
+
+// ─── Current User ──────────────────────────────────────────────
+
+router.get('/me', requireAuth, (req: Request, res: Response) => {
+  res.json({ user: req.user });
+});
+
+// ─── Change Password ───────────────────────────────────────────
+
+router.post('/change-password', requireAuth, async (req: Request, res: Response) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) {
+    res.status(400).json({ error: 'currentPassword and newPassword are required' });
+    return;
+  }
+  const result = await changePassword(req.user!.id, currentPassword, newPassword);
+  if (!result.success) { res.status(400).json({ error: result.error }); return; }
+  res.json({ success: true });
+});
+
+// ─── Admin: Create User ────────────────────────────────────────
+
+router.post('/users', requireAuth, requireAdmin, async (req: Request, res: Response) => {
+  const { empcode, name, email, password, userType, department, clientNumber: reqClientNumber } = req.body;
+  if (!empcode || !name || !email || !password || !userType) {
+    res.status(400).json({ error: 'empcode, name, email, password, and userType are required' });
+    return;
+  }
+  if (!isValidUserType(userType)) { res.status(400).json({ error: 'Invalid userType. Must be: SA, AD, ST, or BS' }); return; }
+
+  // Validate password complexity from system_config
+  const targetClient = req.user!.isSuperAdmin && reqClientNumber ? reqClientNumber : req.user!.clientNumber;
+  const minLen = parseInt(await getConfig(targetClient, 'password_min_length') || '8');
+  const reqUpper = (await getConfig(targetClient, 'password_require_uppercase') || 'true') === 'true';
+  const reqNum = (await getConfig(targetClient, 'password_require_number') || 'true') === 'true';
+  const reqSpecial = (await getConfig(targetClient, 'password_require_special') || 'true') === 'true';
+  const pwError = validatePasswordComplexity(password, { passwordMinLength: minLen, requireUppercase: reqUpper, requireNumber: reqNum, requireSpecial: reqSpecial });
+  if (pwError) { res.status(400).json({ error: pwError }); return; }
+
+  // Admin can only create ST and BS users. SA and AD require SuperAdmin.
+  if ((userType === 'SA' || userType === 'AD') && !req.user!.isSuperAdmin) {
+    res.status(403).json({ error: 'Only SuperAdmin can create Admin or SuperAdmin users' });
+    return;
+  }
+
+  // Validate seat availability
+  const seatCheck = await validateSeatAvailability(targetClient, userType);
+  if (!seatCheck.allowed) { res.status(403).json({ error: seatCheck.error }); return; }
+
+  try {
+    const user = await createUser({ clientNumber: targetClient, empcode, name, email, password, userType, department });
+    res.status(201).json({ success: true, user: { id: user.id, empcode: user.empcode, name: user.name, email: user.email, userType: user.userType } });
+  } catch (error: any) {
+    if (error.code === 'P2002') { res.status(409).json({ error: 'User with this empcode or email already exists' }); return; }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Admin: Reset Password ─────────────────────────────────────
+
+router.post('/users/:empcode/reset-password', requireAuth, requireAdmin, async (req: Request, res: Response) => {
+  const result = await resetPassword(req.user!.clientNumber, req.params.empcode as string);
+  if (!result.success) { res.status(400).json({ error: result.error }); return; }
+  res.json({ success: true, tempPassword: result.tempPassword });
+});
+
+// ─── Send Invitation Email ─────────────────────────────────────
+
+router.post('/users/:id/invite', requireAuth, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const userId = parseInt(req.params.id as string);
+    if (isNaN(userId)) { res.status(400).json({ error: 'Invalid user ID' }); return; }
+    const baseUrl = req.body.baseUrl || `${req.protocol}://${req.get('host')}`.replace(':4002', ':5174'); // client URL
+    const result = await sendInvitation(userId, req.user!.clientNumber, baseUrl);
+    if (!result.success) { res.status(400).json({ error: result.error }); return; }
+    res.json({ success: true, message: 'Invitation sent' });
+  } catch (err: any) {
+    console.error('[Invite Route] Error:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to send invitation' });
+  }
+});
+
+// ─── Public: Get Password Rules (for setup/reset forms) ────────
+
+router.get('/password-rules/:token', async (req: Request, res: Response) => {
+  // Look up user by invite token to get their client's rules
+  const user = await prisma.user.findFirst({ where: { inviteToken: req.params.token as string } });
+  const cn = user?.clientNumber || 'TMC-0001'; // fallback
+  const gc = async (key: string, fallback: string) => (await getConfig(cn, key)) || fallback;
+
+  res.json({
+    minLength: parseInt(await gc('password_min_length', '8')),
+    requireUppercase: (await gc('password_require_uppercase', 'true')) === 'true',
+    requireNumber: (await gc('password_require_number', 'true')) === 'true',
+    requireSpecial: (await gc('password_require_special', 'true')) === 'true',
+  });
+});
+
+// ─── Public: Forgot Password ───────────────────────────────────
+
+router.post('/forgot-password', async (req: Request, res: Response) => {
+  const { email, baseUrl } = req.body;
+  if (!email) { res.status(400).json({ error: 'email is required' }); return; }
+  const clientUrl = baseUrl || `${req.protocol}://${req.get('host')}`.replace(':4002', ':5174');
+  await sendPasswordReset(email, clientUrl);
+  // Always return success to not reveal whether email exists
+  res.json({ success: true, message: 'If an account exists with that email, a reset link has been sent.' });
+});
+
+// ─── Public: Validate Invite Token ─────────────────────────────
+
+router.get('/invite/:token', async (req: Request, res: Response) => {
+  const result = await validateInviteToken(req.params.token as string);
+  res.json(result);
+});
+
+// ─── Public: Set Password via Invite Token ─────────────────────
+
+router.post('/setup-password', async (req: Request, res: Response) => {
+  const { token, password } = req.body;
+  if (!token || !password) { res.status(400).json({ error: 'token and password are required' }); return; }
+  const result = await setupPassword(token, password);
+  if (!result.success) { res.status(400).json({ error: result.error }); return; }
+  res.json({ success: true, message: 'Password set successfully. You can now login.' });
+});
+
+export default router;

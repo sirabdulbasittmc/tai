@@ -1,0 +1,279 @@
+import { google } from 'googleapis';
+import prisma from '../db/prisma';
+import { env } from '../config/env';
+
+/**
+ * IntegrationService — per-user Google OAuth for Gmail + Calendar.
+ *
+ * Flow:
+ * 1. Admin clicks "Connect" for a user → generates OAuth URL
+ * 2. User/admin completes Google consent → callback saves tokens
+ * 3. AI uses tokens to read/send email, manage calendar
+ * 4. Tokens auto-refresh when expired
+ */
+
+const SCOPES = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/userinfo.email',
+];
+
+// ─── OAuth Client ─────────────────────────────────────────────
+
+function getOAuth2Client() {
+  return new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_INTEGRATION_REDIRECT_URI || 'http://localhost:4002/api/integration/callback',
+  );
+}
+
+// ─── Generate OAuth URL for a user ────────────────────────────
+
+export function getAuthUrl(userId: number): string {
+  const client = getOAuth2Client();
+  return client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',         // Force consent to get refresh_token every time
+    scope: SCOPES,
+    state: String(userId),     // Pass userId through OAuth flow
+  });
+}
+
+// ─── Handle OAuth callback ────────────────────────────────────
+
+export async function handleCallback(code: string, userId: number): Promise<{ success: boolean; email?: string; error?: string }> {
+  try {
+    const client = getOAuth2Client();
+    const { tokens } = await client.getToken(code);
+
+    if (!tokens.access_token) {
+      return { success: false, error: 'No access token received' };
+    }
+
+    // Get the user's email from Google
+    client.setCredentials(tokens);
+    const oauth2 = google.oauth2({ version: 'v2', auth: client });
+    const userInfo = await oauth2.userinfo.get();
+    const email = userInfo.data.email || '';
+
+    // Save tokens to user record
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        integrationProvider: 'google',
+        integrationEmail: email,
+        integrationAccessToken: tokens.access_token,
+        integrationRefreshToken: tokens.refresh_token || undefined,
+        integrationTokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+        integrationScopes: 'email,calendar',
+        integrationStatus: 'active',
+        integrationError: null,
+      },
+    });
+
+    console.log(`[Integration] Google connected for user ${userId}: ${email}`);
+    return { success: true, email };
+  } catch (err: any) {
+    console.error(`[Integration] OAuth callback error for user ${userId}:`, err.message);
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { integrationStatus: 'error', integrationError: err.message },
+    });
+
+    return { success: false, error: err.message };
+  }
+}
+
+// ─── Get authenticated client for a user ──────────────────────
+
+export async function getAuthenticatedClient(userId: number): Promise<{ client: any; error?: string }> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      integrationProvider: true,
+      integrationAccessToken: true,
+      integrationRefreshToken: true,
+      integrationTokenExpiry: true,
+      integrationStatus: true,
+    },
+  });
+
+  if (!user?.integrationProvider || !user.integrationAccessToken) {
+    return { client: null, error: 'No email/calendar integration configured. Ask your admin to connect your account.' };
+  }
+
+  const oauth2Client = getOAuth2Client();
+  oauth2Client.setCredentials({
+    access_token: user.integrationAccessToken,
+    refresh_token: user.integrationRefreshToken || undefined,
+    expiry_date: user.integrationTokenExpiry?.getTime(),
+  });
+
+  // Auto-refresh if expired
+  const isExpired = user.integrationTokenExpiry && new Date() > user.integrationTokenExpiry;
+  if (isExpired && user.integrationRefreshToken) {
+    try {
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          integrationAccessToken: credentials.access_token || user.integrationAccessToken,
+          integrationTokenExpiry: credentials.expiry_date ? new Date(credentials.expiry_date) : null,
+          integrationStatus: 'active',
+          integrationError: null,
+        },
+      });
+      oauth2Client.setCredentials(credentials);
+      console.log(`[Integration] Token refreshed for user ${userId}`);
+    } catch (err: any) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { integrationStatus: 'expired', integrationError: `Token refresh failed: ${err.message}` },
+      });
+      return { client: null, error: 'Integration token expired. Ask your admin to reconnect.' };
+    }
+  }
+
+  return { client: oauth2Client };
+}
+
+// ─── Disconnect integration ───────────────────────────────────
+
+export async function disconnectIntegration(userId: number): Promise<void> {
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      integrationProvider: null,
+      integrationEmail: null,
+      integrationAccessToken: null,
+      integrationRefreshToken: null,
+      integrationTokenExpiry: null,
+      integrationScopes: null,
+      integrationStatus: null,
+      integrationError: null,
+    },
+  });
+  console.log(`[Integration] Disconnected for user ${userId}`);
+}
+
+// ─── Get integration status for a user ────────────────────────
+
+export async function getIntegrationStatus(userId: number): Promise<{
+  connected: boolean;
+  provider?: string;
+  email?: string;
+  scopes?: string;
+  status?: string;
+  error?: string;
+  permissions?: string;
+}> {
+  const rows: any[] = await prisma.$queryRawUnsafe(
+    'SELECT integration_provider, integration_email, integration_scopes, integration_status, integration_error, integration_permissions FROM users WHERE id = $1',
+    userId
+  );
+
+  if (!rows.length || !rows[0].integration_provider) {
+    return { connected: false };
+  }
+
+  const u = rows[0];
+  return {
+    connected: true,
+    provider: u.integration_provider || undefined,
+    email: u.integration_email || undefined,
+    scopes: u.integration_scopes || undefined,
+    status: u.integration_status || undefined,
+    error: u.integration_error || undefined,
+    permissions: u.integration_permissions || 'email_read,calendar_read',
+  };
+}
+
+// ─── Permission check helpers ─────────────────────────────────
+
+export type IntegrationPermission = 'email_read' | 'email_write' | 'calendar_read' | 'calendar_write' | 'calendar_delete';
+
+export async function hasPermission(userId: number, permission: IntegrationPermission): Promise<boolean> {
+  const rows: any[] = await prisma.$queryRawUnsafe(
+    'SELECT integration_provider, integration_status, integration_permissions FROM users WHERE id = $1',
+    userId
+  );
+  if (!rows.length || !rows[0].integration_provider || rows[0].integration_status !== 'active') return false;
+  const perms = (rows[0].integration_permissions || '').split(',').map((p: string) => p.trim());
+  return perms.includes(permission);
+}
+
+export async function checkIntegrationReady(userId: number): Promise<{ ready: boolean; message?: string }> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { integrationProvider: true, integrationStatus: true },
+  });
+
+  if (!user?.integrationProvider) {
+    return {
+      ready: false,
+      message: "I'd love to help with that! But your email and calendar aren't connected yet. Go to **Settings → Email & Calendar** and click **Connect Google** to set it up. It only takes a few seconds!",
+    };
+  }
+
+  if (user.integrationStatus === 'expired') {
+    return {
+      ready: false,
+      message: "Your email/calendar connection has expired. Please go to **Settings → Email & Calendar** and click **Reconnect** to fix it.",
+    };
+  }
+
+  if (user.integrationStatus === 'error') {
+    return {
+      ready: false,
+      message: "There's an issue with your email/calendar connection. Please go to **Settings → Email & Calendar** to check the error and reconnect.",
+    };
+  }
+
+  return { ready: true };
+}
+
+export async function updatePermissions(userId: number, permissions: string): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    'UPDATE users SET integration_permissions = $1, updated_at = NOW() WHERE id = $2',
+    permissions, userId
+  );
+}
+
+// ─── Test integration (verify tokens work) ────────────────────
+
+export async function testIntegration(userId: number): Promise<{ success: boolean; email?: string; calendarCount?: number; error?: string }> {
+  const { client, error } = await getAuthenticatedClient(userId);
+  if (!client) return { success: false, error };
+
+  try {
+    // Test Gmail
+    const gmail = google.gmail({ version: 'v1', auth: client });
+    const profile = await gmail.users.getProfile({ userId: 'me' });
+    const email = profile.data.emailAddress || '';
+
+    // Test Calendar
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    const calendars = await calendar.calendarList.list({ maxResults: 5 });
+    const calendarCount = calendars.data.items?.length || 0;
+
+    // Update status
+    await prisma.user.update({
+      where: { id: userId },
+      data: { integrationStatus: 'active', integrationError: null, integrationEmail: email },
+    });
+
+    return { success: true, email, calendarCount };
+  } catch (err: any) {
+    const errorMsg = err.message || 'Integration test failed';
+    await prisma.user.update({
+      where: { id: userId },
+      data: { integrationStatus: 'error', integrationError: errorMsg },
+    });
+    return { success: false, error: errorMsg };
+  }
+}

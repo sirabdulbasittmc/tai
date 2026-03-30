@@ -1,0 +1,292 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Tenants (Multi-tenant root) ───────────────────────────────
+
+model Tenant {
+  clientNumber String    @id @map("client_number") @db.VarChar(20)
+  name         String    @db.VarChar(200)
+  domain       String?   @db.VarChar(100)           // e.g. tmc.com
+  isActive     Boolean   @default(true) @map("is_active")
+  expiry       DateTime? @map("expiry")              // Subscription expiry date
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  configs        SystemConfig[]
+  users          User[]
+  clientLicense  ClientLicense?
+  documents      Document[]
+  chunks         Chunk[]
+  conversations  Conversation[]
+  messages       Message[]
+  auditLogs      AuditLog[]
+  scheduledTasks ScheduledTask[]
+
+  @@map("tenants")
+}
+
+// ─── Licensing ─────────────────────────────────────────────────
+
+model License {
+  id          Int      @id @default(autoincrement())
+  roleType    String   @unique @map("role_type") @db.VarChar(20) // admin, standard, basic
+  pricePerSeat Decimal @map("price_per_seat") @db.Decimal(10, 2)
+  currency    String   @default("USD") @db.VarChar(5)
+  description String?  @db.VarChar(200)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("licenses")
+}
+
+model ClientLicense {
+  id            Int       @id @default(autoincrement())
+  clientNumber  String    @unique @map("client_number") @db.VarChar(20)
+  adminSeats    Int       @default(0) @map("admin_seats")       // Admin seat count
+  standardSeats Int       @default(0) @map("standard_seats")    // Standard seat count
+  basicSeats    Int       @default(0) @map("basic_seats")       // Basic seat count
+  licenseAmount Decimal   @default(0) @map("license_amount") @db.Decimal(12, 2) // Total before discount
+  discount      Decimal   @default(0) @map("discount") @db.Decimal(5, 2)        // Discount %
+  discAmount    Decimal   @default(0) @map("disc_amount") @db.Decimal(12, 2)    // Discount amount
+  netAmount     Decimal   @default(0) @map("net_amount") @db.Decimal(12, 2)     // Final billing
+  termAmount    Decimal   @default(0) @map("term_amount") @db.Decimal(12, 2)    // Per-period cost
+  term          String    @default("M") @db.VarChar(5)   // M=monthly, Q=quarterly, Y=yearly
+  startDate     DateTime  @map("start_date")
+  endDate       DateTime  @map("end_date")
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
+
+  @@map("client_licenses")
+}
+
+// ─── System Configuration (HRAPR pattern) ──────────────────────
+
+model SystemConfig {
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  key          String   @db.VarChar(50)
+  value        String   @db.Text
+  isSensitive  Boolean  @default(false) @map("is_sensitive")
+  description  String?  @db.VarChar(255)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
+
+  @@id([clientNumber, key])
+  @@map("system_config")
+}
+
+// ─── Users ─────────────────────────────────────────────────────
+
+model User {
+  id             Int       @id @default(autoincrement())
+  clientNumber   String    @map("client_number") @db.VarChar(20)
+  empcode        String    @db.VarChar(20)
+  name           String    @db.VarChar(100)
+  email          String    @unique @db.VarChar(100)  // Globally unique across all tenants
+  passwordHash   String    @map("password_hash") @db.VarChar(255)
+  userType       String    @default("BS") @map("user_type") @db.VarChar(5) // SA, AD, ST, BS
+  department     String?   @db.VarChar(50)
+  isActive       Boolean   @default(true) @map("is_active")
+  inviteToken    String?   @unique @map("invite_token") @db.VarChar(255)
+  inviteExpiresAt DateTime? @map("invite_expires_at")
+  inviteSentAt   DateTime? @map("invite_sent_at")
+  passwordSet    Boolean   @default(false) @map("password_set")  // false = needs to set via invite
+  lastLoginAt    DateTime? @map("last_login_at")
+  failedAttempts Int       @default(0) @map("failed_attempts")
+  lockedUntil    DateTime? @map("locked_until")
+  jobDescription String?   @map("job_description") @db.Text
+  city           String?   @db.VarChar(100)
+  contactNumber  String?   @map("contact_number") @db.VarChar(30)
+  aboutMe        String?   @map("about_me") @db.Text
+  instructions   String?   @db.Text
+  tonePreference String?   @map("tone_preference") @db.VarChar(30)
+
+  // ── Email & Calendar Integration (per-user, admin-managed) ──
+  integrationProvider     String?   @map("integration_provider") @db.VarChar(20)   // 'google' or 'microsoft'
+  integrationEmail        String?   @map("integration_email") @db.VarChar(150)     // connected email address
+  integrationAccessToken  String?   @map("integration_access_token") @db.Text      // OAuth access token (encrypted)
+  integrationRefreshToken String?   @map("integration_refresh_token") @db.Text     // OAuth refresh token (encrypted)
+  integrationTokenExpiry  DateTime? @map("integration_token_expiry")               // when access token expires
+  integrationScopes       String?   @map("integration_scopes") @db.VarChar(200)   // 'email,calendar' or 'email' or 'calendar'
+  integrationStatus       String?   @map("integration_status") @db.VarChar(20)    // 'active', 'expired', 'error'
+  integrationError        String?   @map("integration_error") @db.Text            // last error message if any
+  integrationPermissions  String?   @default("email_read,calendar_read") @map("integration_permissions") @db.Text  // comma-separated: email_read,email_write,calendar_read,calendar_write,calendar_delete
+
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant         Tenant           @relation(fields: [clientNumber], references: [clientNumber])
+  sessions       Session[]
+  conversations  Conversation[]
+  auditLogs      AuditLog[]
+  scheduledTasks ScheduledTask[]
+
+  @@unique([clientNumber, empcode])
+  @@map("users")
+}
+
+// ─── Sessions ──────────────────────────────────────────────────
+
+model Session {
+  id        Int       @id @default(autoincrement())
+  token     String    @unique @db.VarChar(255)
+  userId    Int       @map("user_id")
+  expiresAt DateTime  @map("expires_at")
+  isRevoked Boolean   @default(false) @map("is_revoked")
+  userAgent String?   @map("user_agent") @db.VarChar(500)
+  ipAddress String?   @map("ip_address") @db.VarChar(50)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("sessions")
+}
+
+// ─── Documents & Chunks ────────────────────────────────────────
+
+model Document {
+  id             Int       @id @default(autoincrement())
+  clientNumber   String    @map("client_number") @db.VarChar(20)
+  source         String    @db.VarChar(50)
+  sourceId       String?   @map("source_id") @db.VarChar(255)
+  title          String    @db.VarChar(255)
+  version        String?   @db.VarChar(50)
+  department     String?   @db.VarChar(50)
+  lastCheckedAt  DateTime? @map("last_checked_at")
+  lastModifiedAt DateTime? @map("last_modified_at")
+  syncStatus     String    @default("pending") @map("sync_status") @db.VarChar(20)
+  contentHash    String?   @map("content_hash") @db.VarChar(64)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  archivedAt     DateTime? @map("archived_at")
+
+  tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
+  chunks Chunk[]
+
+  @@map("documents")
+}
+
+model Chunk {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  documentId   Int      @map("document_id")
+  content      String   @db.Text
+  embedding    Json     @default("[]")
+  chunkIndex   Int      @map("chunk_index")
+  headerPath   String[] @default([]) @map("header_path")
+  contentHash  String   @unique @map("content_hash") @db.VarChar(64)
+  department   String?  @db.VarChar(50)
+  source       String   @db.VarChar(50)
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant   @relation(fields: [clientNumber], references: [clientNumber])
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([clientNumber])
+  @@index([documentId])
+  @@index([contentHash])
+  @@index([department])
+  @@map("chunks")
+}
+
+// ─── Chat History ──────────────────────────────────────────────
+
+model Conversation {
+  id           Int       @id @default(autoincrement())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  title        String?   @db.VarChar(255)
+  provider     String?   @db.VarChar(20)
+  messageCount Int       @default(0) @map("message_count")
+  isArchived   Boolean   @default(false) @map("is_archived")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant   Tenant    @relation(fields: [clientNumber], references: [clientNumber])
+  user     User      @relation(fields: [userId], references: [id])
+  messages Message[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             Int      @id @default(autoincrement())
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  conversationId Int      @map("conversation_id")
+  role           String   @db.VarChar(10)
+  content        String   @db.Text
+  provider       String?  @db.VarChar(20)
+  inputTokens    Int?     @map("input_tokens")
+  outputTokens   Int?     @map("output_tokens")
+  responseTimeMs Int?     @map("response_time_ms")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  tenant       Tenant       @relation(fields: [clientNumber], references: [clientNumber])
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+// ─── User Memory ───────────────────────────────────────────────
+// UserMemory model REMOVED — replaced by user_profile_memory (raw SQL, 1 row per user)
+// Legacy tables ai_memory, context_memory, user_memory dropped on 2026-03-29
+
+// ─── Audit Log ─────────────────────────────────────────────────
+
+model AuditLog {
+  id               Int      @id @default(autoincrement())
+  clientNumber     String   @map("client_number") @db.VarChar(20)
+  userId           Int?     @map("user_id")
+  maskedQuery      String   @map("masked_query") @db.Text
+  provider         String   @db.VarChar(20)
+  chunksRetrieved  Int      @default(0) @map("chunks_retrieved")
+  topScore         Float?   @map("top_score")
+  piiEntitiesCount Int      @default(0) @map("pii_entities_count")
+  inputTokens      Int?     @map("input_tokens")
+  outputTokens     Int?     @map("output_tokens")
+  responseTimeMs   Int      @map("response_time_ms")
+  intentType       String?  @map("intent_type") @db.VarChar(30)
+  error            String?  @db.Text
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
+  user   User?  @relation(fields: [userId], references: [id])
+
+  @@map("audit_log")
+}
+
+// ─── Scheduled Tasks ───────────────────────────────────────────
+
+model ScheduledTask {
+  id             Int       @id @default(autoincrement())
+  clientNumber   String    @map("client_number") @db.VarChar(20)
+  userId         Int       @map("user_id")
+  title          String    @db.VarChar(200)
+  prompt         String    @db.Text
+  cronExpression String    @map("cron_expression") @db.VarChar(50)
+  provider       String    @default("gemini-flash") @db.VarChar(20)
+  notifyEmail    String?   @map("notify_email") @db.VarChar(255)
+  notifySelf     Boolean   @default(true) @map("notify_self")
+  isActive       Boolean   @default(true) @map("is_active")
+  lastRunAt      DateTime? @map("last_run_at")
+  lastResult     String?   @map("last_result") @db.Text
+  lastError      String?   @map("last_error") @db.Text
+  nextRunAt      DateTime? @map("next_run_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@map("scheduled_tasks")
+}

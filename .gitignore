@@ -1,0 +1,28 @@
+node_modules/
+dist/
+.env
+*.env.local
+*.env.production
+
+# GCP service account key (NEVER commit)
+tmcai-key.json
+
+# Google OAuth client secret (NEVER commit)
+client_secret_*.json
+
+# Vector store (contains indexed business data)
+server/data/vectors.json
+
+# Google Drive tokens
+server/.gdrive_token.json
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PM2 logs
+/var/log/tmcai/

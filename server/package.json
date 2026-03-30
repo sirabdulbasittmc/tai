@@ -1,0 +1,48 @@
+{
+  "name": "tmcai-server",
+  "version": "1.0.0",
+  "description": "TMC AI Intelligence Server",
+  "main": "dist/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "dev": "nodemon --watch src --ext ts --exec ts-node src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@google-cloud/aiplatform": "^6.5.0",
+    "@google-cloud/bigquery": "^8.1.1",
+    "@google-cloud/vertexai": "^1.10.3",
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "^6.19.2",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.3.1",
+    "googleapis": "^144.0.0",
+    "groq-sdk": "^1.1.2",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^8.0.4",
+    "openai": "^4.77.0",
+    "pg": "^8.20.0",
+    "pgvector": "^0.2.1",
+    "prisma": "^6.19.2"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/crypto-js": "^4.2.2",
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.13",
+    "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^7.0.11",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
