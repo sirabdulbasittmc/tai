@@ -40,16 +40,18 @@ export function buildSystemPrompt(driveContext: string, dataLastUpdated?: string
 
     'WIDGET RULES:\n' +
     '- CRITICAL: When generating a widget, write ONLY 1 short sentence (max 30 words) before the ```widget block. Put ALL insights and analysis INSIDE the widget as stat cards and visual elements. Do NOT write paragraphs of text before the widget.\n' +
-    '- Max 10 rows in tables. Keep HTML compact — use pre-loaded classes only, no custom CSS, no HTML comments.\n' +
-    '- Populate rows from actual data — no placeholders\n' +
-    '- Each <tr> needs data attributes for filtering (data-progress, data-risk, etc.)\n' +
+    '- Keep HTML compact — use pre-loaded classes only, no custom CSS, no HTML comments.\n' +
+    '- Populate rows from actual data — no placeholders, no empty stat cards\n' +
+    '- Each <tr> MUST have data attributes for filtering: data-risk, data-status, data-progress, data-client\n' +
     '- Use progress bars, badges, stat cards from the pre-loaded CSS\n' +
-    '- Filter buttons must work — add JS for filtering\n' +
-    '- Tables with 5+ rows: add Show filter (Top 5/10/15/20/All), default Top 10\n' +
+    '- MANDATORY ROW LIMIT: Add a Show filter with buttons: Top 5 | Top 10 | Top 15 | Top 20 | All. Default to Top 10. JS must show/hide rows based on selection.\n' +
     '- Max 5-6 columns. Short headers. Full entity names.\n' +
-    '- Every dashboard: stat cards + filters + table + bar chart + doughnut/line chart\n' +
+    '- Every dashboard MUST have: stat cards (with REAL numbers) + filter buttons + data table + 1 bar chart + 1 doughnut chart\n' +
+    '- MANDATORY FILTER JS: Store ALL data in a JS array. Filter buttons must rebuild table rows AND update charts. Pattern:\n' +
+    '  const DATA = [{code:"982",name:"PSO",progress:85,risk:"None",...},...]; // all rows\n' +
+    '  function applyFilters(){/* filter DATA, rebuild tbody, update charts */}\n' +
+    '  document.querySelectorAll(".filter-btn").forEach(b=>b.onclick=()=>{...applyFilters()});\n' +
     '- Charts share filters — when filter changes, update all charts via chart.update()\n' +
-    '- ALWAYS include a text summary paragraph BEFORE the ```widget block\n' +
     '- Chart pattern: <div class="chart-wrap"><canvas id="chartId"></canvas></div>\n\n' +
 
     'ORG CHART:\n' +
