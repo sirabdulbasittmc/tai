@@ -6,7 +6,7 @@ import api from '../services/api';
 export default function SettingsPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [profile, setProfile] = useState({ city: '', contactNumber: '', aboutMe: '', instructions: '', tonePreference: '' });
+  const [profile, setProfile] = useState({ city: '', contactNumber: '', aboutMe: '', instructions: '' });
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '' });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -14,7 +14,7 @@ export default function SettingsPage() {
   useEffect(() => {
     api.get('/profile').then(res => {
       const p = res.data.profile || {};
-      setProfile({ city: p.city || '', contactNumber: p.contactNumber || '', aboutMe: p.aboutMe || '', instructions: p.instructions || '', tonePreference: p.tonePreference || '' });
+      setProfile({ city: p.city || '', contactNumber: p.contactNumber || '', aboutMe: p.aboutMe || '', instructions: p.instructions || '' });
     }).catch(() => {});
   }, []);
 
@@ -55,7 +55,7 @@ export default function SettingsPage() {
     api.get('/integration/status').then(r => setIntStatus(r.data)).catch(() => {});
   }, []);
 
-  const tones = ['', 'friendly', 'formal', 'executive', 'casual', 'technical'];
+  // Tone is auto-learned by AI from conversations — no manual setting needed
 
   return (
     <div className="settings-page">
