@@ -79,9 +79,12 @@ export async function addMessage(data: {
   return message;
 }
 
-export async function getRecentMessages(conversationId: number, limit = 4) {
+export async function getRecentMessages(conversationId: number, limit = 4, userId?: number) {
   return prisma.message.findMany({
-    where: { conversationId },
+    where: {
+      conversationId,
+      ...(userId ? { conversation: { userId } } : {}), // validate ownership
+    },
     orderBy: { createdAt: 'desc' },
     take: limit,
     select: { role: true, content: true },

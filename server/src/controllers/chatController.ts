@@ -38,8 +38,8 @@ interface CachedResponse { chunks: string[]; meta: any; timestamp: number; }
 const dedupCache = new Map<string, CachedResponse>();
 let DEDUP_TTL_MS = 300_000; // Default 5 min — updated from system_config on first request
 
-function getDedupKey(message: string, provider: string): string {
-  return crypto.createHash('md5').update(`${message}::${provider}`).digest('hex');
+function getDedupKey(userId: number | undefined, message: string, provider: string): string {
+  return crypto.createHash('md5').update(`${userId || 0}::${message}::${provider}`).digest('hex');
 }
 function getCachedResponse(key: string): CachedResponse | null {
   const cached = dedupCache.get(key);
@@ -129,6 +129,12 @@ export async function streamChat(req: Request, res: Response) {
     const clientNumber = req.user?.clientNumber;
     let conversationId = reqConversationId;
 
+    // Validate conversation ownership — prevent cross-user history leakage
+    if (conversationId && userId) {
+      const conv = await prisma.conversation.findFirst({ where: { id: conversationId, userId } });
+      if (!conv) conversationId = undefined; // reject unauthorized conversation
+    }
+
     // Don't create conversations for email/calendar utility queries — they clutter history
     const isUtilityQuery = /^(check my emails?|what'?s on my calendar|show my schedule|show my emails)/i.test(message.trim());
 
@@ -141,7 +147,7 @@ export async function streamChat(req: Request, res: Response) {
     }
 
     // ── Dedup check ──────────────────────────────────────────
-    const dedupKey = getDedupKey(message, provider);
+    const dedupKey = getDedupKey(userId, message, provider);
     const cached = getCachedResponse(dedupKey);
     if (cached) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -191,7 +197,7 @@ export async function streamChat(req: Request, res: Response) {
 
     const [intent, chatHistory, userProfile, memoryBlocks, userLearnings, tierSettings] = await Promise.all([
       classifyIntent(message, formatHints || undefined),
-      conversationId ? getRecentMessages(conversationId, 4) : Promise.resolve([]),
+      conversationId ? getRecentMessages(conversationId, 4, userId) : Promise.resolve([]),
       userId ? getUserProfile(userId) : Promise.resolve(null),
       userId ? buildMemoryPromptBlocks(userId) : Promise.resolve({ userMemoryBlock: '', aiMemoryBlock: '', contextBlock: '', aiName: '' }),
       userId ? getUserLearnings(userId) : Promise.resolve([]),
@@ -414,6 +420,7 @@ export async function streamChat(req: Request, res: Response) {
           if (userProfile.instructions) convPrompt += `\nInstructions: ${userProfile.instructions}`;
         }
         convPrompt += '\nYou know this user personally. When asked about yourself or about them, use their name and your knowledge.';
+        convPrompt += '\nCRITICAL PRIVACY RULE: NEVER invent or hallucinate personal facts about the user. ONLY reference information from the MEMORY blocks below or what the user told you in THIS conversation. If you don\'t know something about them, say "I don\'t know that yet — tell me!" Do NOT make up stories about "she", "he", family, health, or any personal details.';
         if (userMemoryBlock) convPrompt += '\n' + userMemoryBlock;
         if (aiMemoryBlock) convPrompt += '\n' + aiMemoryBlock;
         if (contextBlock) convPrompt += '\n' + contextBlock;
