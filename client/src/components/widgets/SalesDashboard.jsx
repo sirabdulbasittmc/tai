@@ -34,6 +34,7 @@ function formatUSD(val) {
 }
 
 export default function SalesDashboard({ data }) {
+  console.log('[SalesDashboard] Received data:', JSON.stringify(data, null, 2).slice(0, 500));
   const [currency, setCurrency] = useState('PKR');
   const [techFilter, setTechFilter] = useState('All');
   const [rowLimit, setRowLimit] = useState(10);
