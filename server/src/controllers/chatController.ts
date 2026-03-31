@@ -9,7 +9,7 @@ import { buildSystemPrompt } from '../services/promptService';
 import { streamClaude } from '../services/claudeService';
 import { streamOpenAI } from '../services/openaiService';
 import { streamOpenRouter } from '../services/openrouterService';
-import { streamGemini } from '../services/geminiService';
+import { streamGemini, ChatTurn } from '../services/geminiService';
 import { streamGroq } from '../services/groqService';
 import { classifyIntent, buildIntentDirective, Intent } from '../services/intentService';
 import { maskPII, createStreamUnmasker, isPIIEnabled } from '../pipeline/piiService';
@@ -197,7 +197,7 @@ export async function streamChat(req: Request, res: Response) {
 
     const [intent, chatHistory, userProfile, memoryBlocks, userLearnings, tierSettings] = await Promise.all([
       classifyIntent(message, formatHints || undefined),
-      conversationId ? getRecentMessages(conversationId, 4, userId) : Promise.resolve([]),
+      conversationId ? getRecentMessages(conversationId, 20, userId) : Promise.resolve([]),
       userId ? getUserProfile(userId) : Promise.resolve(null),
       userId ? buildMemoryPromptBlocks(userId) : Promise.resolve({ userMemoryBlock: '', aiMemoryBlock: '', contextBlock: '', aiName: '' }),
       userId ? getUserLearnings(userId) : Promise.resolve([]),
@@ -955,16 +955,15 @@ export async function streamChat(req: Request, res: Response) {
         '\nUse these silently.\n── END PATTERNS ──\n\n';
     }
 
-    // ── Build conversation history for context ───────────
-    let historyBlock = '';
+    // ── Build conversation history as multi-turn array (like Claude/GPT) ──
+    // Full messages sent as separate turns — no truncation, AI sees entire conversation
+    const conversationTurns: { role: 'user' | 'assistant'; content: string }[] = [];
     if (chatHistory.length > 0) {
-      const turns = chatHistory.reverse().map(m => {
-        const maxLen = m.role === 'user' ? aiConfig.historyMaxCharsUser : aiConfig.historyMaxCharsAssistant;
-        return `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, maxLen)}`;
-      }).join('\n');
-      historyBlock = '── RECENT CONVERSATION ──\n' + turns +
-        '\n── END CONVERSATION ──\nIMPORTANT: When user says "above", "those values", "that table", "show me in X format" — they are referring to YOUR LAST RESPONSE above. Use it as context.\n\n';
+      chatHistory.reverse().forEach(m => {
+        conversationTurns.push({ role: m.role as 'user' | 'assistant', content: m.content });
+      });
     }
+    const historyBlock = ''; // history now sent as multi-turn contents, not text block
 
     // Build prompt
     const intentDirective = buildIntentDirective(intent);
@@ -1069,11 +1068,13 @@ export async function streamChat(req: Request, res: Response) {
       // Without this, Gemini 2.5 Flash spends 80%+ of output budget on invisible thinking
       const noThink = provider === 'gemini' || provider === 'gemini-flash';
       const timeoutMs = env.requestTimeoutMs;
+      // Pass full conversation history for multi-turn support (like Claude/GPT)
+      const history = conversationTurns.length > 0 ? conversationTurns : undefined;
       const llmCall = async () => {
         if (provider === 'gemini') {
-          await streamGemini(systemPrompt, message, wrappedSendChunk, useFlash, maxTokens, noThink);
+          await streamGemini(systemPrompt, message, wrappedSendChunk, useFlash, maxTokens, noThink, history);
         } else if (provider === 'gemini-flash') {
-          await streamGemini(systemPrompt, message, wrappedSendChunk, true, maxTokens, noThink);
+          await streamGemini(systemPrompt, message, wrappedSendChunk, true, maxTokens, noThink, history);
         } else if (provider === 'groq') {
           await streamGroq(systemPrompt, message, wrappedSendChunk);
         } else if (provider === 'claude') {

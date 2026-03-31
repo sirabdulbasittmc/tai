@@ -2,13 +2,20 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { env } from '../config/env';
 import { MODEL_GEMINI, MODEL_GEMINI_FLASH } from '../config/models';
 
+// Conversation history type for multi-turn support
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export async function streamGemini(
   systemPrompt: string,
   userMessage: string,
   onChunk: (text: string) => void,
   useFlash: boolean = false,
   maxOutputTokens?: number,
-  disableThinking: boolean = false
+  disableThinking: boolean = false,
+  conversationHistory?: ChatTurn[]
 ): Promise<void> {
   if (!env.geminiApiKey) {
     throw new Error('GEMINI_API_KEY not configured');
@@ -19,12 +26,9 @@ export async function streamGemini(
   // For widget generation, use REST API with thinkingConfig to disable thinking
   // SDK v0.24 doesn't support thinkingConfig, so we call the API directly
   if (disableThinking) {
-    // Use REST API with controlled thinking budget
-    // Widget/HTML: thinkingBudget=0 (all tokens for output)
-    // Text responses: thinkingBudget=512 (some thinking improves quality)
     const isLargeOutput = (maxOutputTokens || 0) > 4096;
     const budget = isLargeOutput ? 0 : 512;
-    await streamGeminiREST(modelId, systemPrompt, userMessage, onChunk, maxOutputTokens || 4096, budget);
+    await streamGeminiREST(modelId, systemPrompt, userMessage, onChunk, maxOutputTokens || 4096, budget, conversationHistory);
     return;
   }
 
@@ -37,11 +41,24 @@ export async function streamGemini(
     },
   });
 
-  const result = await model.generateContentStream(userMessage);
-
-  for await (const chunk of result.stream) {
-    const text = chunk.text();
-    if (text) onChunk(text);
+  // Build multi-turn contents if history exists
+  if (conversationHistory && conversationHistory.length > 0) {
+    const contents = conversationHistory.map(turn => ({
+      role: turn.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: turn.content }],
+    }));
+    contents.push({ role: 'user', parts: [{ text: userMessage }] });
+    const result = await model.generateContentStream({ contents });
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) onChunk(text);
+    }
+  } else {
+    const result = await model.generateContentStream(userMessage);
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) onChunk(text);
+    }
   }
 }
 
@@ -55,13 +72,26 @@ async function streamGeminiREST(
   userMessage: string,
   onChunk: (text: string) => void,
   maxOutputTokens: number,
-  thinkingBudget: number = 0
+  thinkingBudget: number = 0,
+  conversationHistory?: ChatTurn[]
 ): Promise<void> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?alt=sse&key=${env.geminiApiKey}`;
 
+  // Build multi-turn contents array (like Claude/GPT conversation format)
+  const contents: any[] = [];
+  if (conversationHistory && conversationHistory.length > 0) {
+    for (const turn of conversationHistory) {
+      contents.push({
+        role: turn.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: turn.content }],
+      });
+    }
+  }
+  contents.push({ role: 'user', parts: [{ text: userMessage }] });
+
   const body = {
     systemInstruction: { parts: [{ text: systemPrompt }] },
-    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+    contents,
     generationConfig: {
       maxOutputTokens,
       thinkingConfig: { thinkingBudget },
