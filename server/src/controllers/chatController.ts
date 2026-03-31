@@ -813,7 +813,10 @@ export async function streamChat(req: Request, res: Response) {
         }
 
         if (chatHistory.length > 0) {
-          convPrompt += '\n\nRecent conversation:\n' + chatHistory.reverse().map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 200)}`).join('\n');
+          convPrompt += '\n\nRecent conversation:\n' + chatHistory.reverse().map(m => {
+            const maxLen = m.role === 'user' ? 300 : 1000;
+            return `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, maxLen)}`;
+          }).join('\n');
         }
         await streamGemini(convPrompt, message, sendChunkDirect, true, 4096, true);
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -951,11 +954,13 @@ export async function streamChat(req: Request, res: Response) {
     // ── Build conversation history for context ───────────
     let historyBlock = '';
     if (chatHistory.length > 0) {
-      const turns = chatHistory.reverse().map(m =>
-        `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 300)}`
-      ).join('\n');
+      const turns = chatHistory.reverse().map(m => {
+        // User messages: short. Assistant messages: longer to preserve tables/data for follow-ups
+        const maxLen = m.role === 'user' ? 300 : 1500;
+        return `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, maxLen)}`;
+      }).join('\n');
       historyBlock = '── RECENT CONVERSATION ──\n' + turns +
-        '\n── END CONVERSATION ──\nUse the above conversation context to understand follow-up references like "their", "it", "that project", etc.\n\n';
+        '\n── END CONVERSATION ──\nIMPORTANT: When user says "above", "those values", "that table", "show me in X format" — they are referring to YOUR LAST RESPONSE above. Use it as context.\n\n';
     }
 
     // Build prompt
