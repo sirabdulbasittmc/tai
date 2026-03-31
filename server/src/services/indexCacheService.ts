@@ -45,6 +45,11 @@ function parseSections(content: string): Section[] {
 }
 
 export async function refreshIndex(): Promise<void> {
+  const dataSource = process.env.DATA_SOURCE || 'drive';
+  if (dataSource === 'bigquery') {
+    console.log('✓ BigQuery mode active — skipping Drive index load');
+    return;
+  }
   try {
     console.log('Refreshing index...');
 
