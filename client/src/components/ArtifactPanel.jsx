@@ -1,4 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
+
+const DashboardWidget = lazy(() => import('./widgets/DashboardWidget'));
 
 export default function ArtifactPanel({ artifact, onClose }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -66,6 +68,11 @@ export default function ArtifactPanel({ artifact, onClose }) {
             </div>
           )}
           {artifact.type === 'widget' && <ArtifactWidget html={artifact.html} />}
+          {artifact.type === 'dashboard' && artifact.widgetData && (
+            <Suspense fallback={<div style={{padding:20,color:'#888'}}>Loading dashboard...</div>}>
+              <DashboardWidget data={artifact.widgetData} />
+            </Suspense>
+          )}
           {artifact.type === 'chart' && <div className="artifact-chart">{artifact.content}</div>}
         </div>
       </div>

@@ -25,8 +25,8 @@ export default function ChatPage() {
   const handleNewChat = () => { newChat(); setSidebarOpen(false); setArtifact(null); };
   const handleSelectConversation = (id) => { loadConversation(id); setSidebarOpen(false); setArtifact(null); };
 
-  const openArtifact = (type, html, title) => {
-    setArtifact({ type, html, title });
+  const openArtifact = (type, html, title, widgetData) => {
+    setArtifact({ type, html, title, widgetData });
   };
 
   return (

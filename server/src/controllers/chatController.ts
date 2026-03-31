@@ -1004,9 +1004,17 @@ export async function streamChat(req: Request, res: Response) {
     if (widgetType && context && WIDGET_SCHEMAS[widgetType]) {
       try {
         sendStatus('Building dashboard...');
+        // Get data summary for accurate totals (not from chunk subset)
+        const widgetSummary = await getDataSummaryFromBQ().catch(() => '');
         const widgetPrompt = `Extract data from TMC context. Return ONLY valid JSON matching this schema:
 ${WIDGET_SCHEMAS[widgetType]}
-Rules: Use Revenue Year 1 as primary revenue. Check Currency column (PKR/USD). Skip empty revenue. Progress as number (75.5%→75.5). Include TOP 20 items in arrays. Compute summary from ALL data. Use null for missing fields.
+Rules:
+- Use Revenue Year 1 as primary revenue. Check Currency column (PKR/USD). Skip empty revenue.
+- Progress as number (75.5%→75.5). Include TOP 20 items in arrays. Use null for missing fields.
+- IMPORTANT: For summary totals (total_employees, total_deals, total_projects etc.), use the EXACT counts from DATA SUMMARY below — NOT from counting rows in the context (context is a subset).
+- For detail rows (top_deals, projects, employees arrays), extract from CONTEXT below.
+
+${widgetSummary}
 CONTEXT:
 ${context.slice(0, 20000)}`;
 
