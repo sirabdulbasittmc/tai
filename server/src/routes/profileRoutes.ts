@@ -13,11 +13,12 @@ router.get('/', async (req: Request, res: Response) => {
 
 // Update my profile (JD is NOT editable here — synced from HR)
 router.put('/', async (req: Request, res: Response) => {
-  const { city, contactNumber, aboutMe, instructions, tonePreference } = req.body;
+  const { city, contactNumber, aboutMe, instructions, tonePreference: rawTone } = req.body;
+  const tonePreference = rawTone || null; // empty string → null
 
   // Validate tone
   const validTones = ['friendly', 'formal', 'executive', 'casual', 'technical', null];
-  if (tonePreference !== undefined && !validTones.includes(tonePreference)) {
+  if (tonePreference !== null && !validTones.includes(tonePreference)) {
     res.status(400).json({ error: `Invalid tone. Choose from: ${validTones.filter(Boolean).join(', ')}` });
     return;
   }
