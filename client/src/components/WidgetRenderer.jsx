@@ -65,6 +65,28 @@ export default function WidgetRenderer({ html }) {
 <body>
 ${html}
 <script>
+  // Safety net: hide empty stat cards and empty table rows
+  setTimeout(function() {
+    document.querySelectorAll('.stat-card').forEach(function(card) {
+      var val = card.querySelector('.stat-value');
+      if (val && (!val.textContent.trim() || val.textContent.trim() === '0%' && !card.querySelector('.stat-label')?.textContent.includes('Growth'))) {
+        card.style.display = 'none';
+      }
+    });
+    // Hide empty table rows (all cells empty or just dashes)
+    document.querySelectorAll('tbody tr').forEach(function(row) {
+      var cells = row.querySelectorAll('td');
+      var allEmpty = true;
+      cells.forEach(function(c) { if (c.textContent.trim() && c.textContent.trim() !== '-') allEmpty = false; });
+      if (allEmpty) row.style.display = 'none';
+    });
+    // If ALL stat cards hidden, remove the card-grid container
+    document.querySelectorAll('.card-grid').forEach(function(grid) {
+      var visible = grid.querySelectorAll('.stat-card:not([style*="display: none"])');
+      if (visible.length === 0) grid.style.display = 'none';
+    });
+  }, 500);
+
   // Auto-resize: notify parent of content height — multiple passes to catch late renders
   function notifyHeight() {
     const h = document.body.scrollHeight;
