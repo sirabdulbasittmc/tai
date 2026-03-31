@@ -101,27 +101,65 @@ const FULL_CONTEXT_LIMITS: Record<string, number> = {
 // Intent types that should use Flash even if user selected Pro (much faster for widgets)
 const FORCE_FLASH_INTENTS = new Set(['quick_answer', 'list', 'dashboard', 'export', 'conversational']);
 
-// ── Structured Widget Detection ──────────────────────────────
-// Instead of AI generating HTML, detect dashboard queries and ask AI for JSON only.
-// React renders the JSON using fixed templates — 100% reliable, no blank cards.
-function detectWidgetType(query: string): string | null {
-  const q = query.toLowerCase();
-  if (q.includes('sales dashboard') || q.includes('revenue dashboard') ||
-      q.includes('show me sales deal') || q.includes('sales overview'))
-    return 'sales_dashboard';
-  if (q.includes('project dashboard') || q.includes('project status dashboard') ||
-      q.includes('project overview') || q.includes('all projects'))
-    return 'project_dashboard';
-  if (q.includes('risk dashboard') || q.includes('all risks') ||
-      q.includes('risk overview') || q.includes('open risks'))
-    return 'risk_dashboard';
-  if (q.includes('pipeline dashboard') || q.includes('pipeline overview') ||
-      q.includes('pipeline health') || q.includes('show me pipeline'))
-    return 'pipeline_dashboard';
-  if (q.includes('employee directory') || q.includes('employee dashboard') ||
-      q.includes('all employees') || q.includes('team dashboard'))
-    return 'employee_dashboard';
-  return null;
+// ── LLM-Based Widget Classifier ──────────────────────────────
+// Uses Gemini Flash to classify any query phrasing → widget type.
+// ~100 tokens per call, ~50ms, essentially free at scale.
+interface WidgetClassification {
+  widget_type: string | null;
+  skip_data: boolean;
+  domain: string | null;
+}
+
+async function classifyWidgetIntent(userQuery: string): Promise<WidgetClassification> {
+  const fallback: WidgetClassification = { widget_type: null, skip_data: false, domain: null };
+  if (!env.geminiApiKey) return fallback;
+
+  try {
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(env.geminiApiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { maxOutputTokens: 100 } });
+
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000));
+    const classify = model.generateContent(`You are a query classifier for TMC AI (TallyMarks Consulting).
+Classify this query. Return JSON only. No explanation.
+
+Query: "${userQuery}"
+
+Return exactly:
+{"widget_type":"sales_dashboard|project_dashboard|risk_dashboard|pipeline_dashboard|employee_dashboard|null","skip_data":true/false,"domain":"deals|projects|pipeline|employees|accounts|okr|competency|null"}
+
+Rules:
+- "sales_dashboard": sales data, deals, revenue, clients, contracts, sales comparison, revenue trend
+- "project_dashboard": projects, delivery status, milestones, progress, project details, portfolio, behind schedule
+- "risk_dashboard": risks, blockers, critical issues, at-risk items, open risks
+- "pipeline_dashboard": pipeline, opportunities, prospects, open deals, funnel
+- "employee_dashboard": employees, staff, headcount, team, org structure, employee list
+- null: specific single question, count query, conversational, lookup of one item
+- skip_data=true: greetings, thanks, jokes, weather, currency, non-TMC topics
+- domain: primary data domain needed (null if skip_data=true)
+
+Examples:
+"show me sales deal" → {"widget_type":"sales_dashboard","skip_data":false,"domain":"deals"}
+"show me project details" → {"widget_type":"project_dashboard","skip_data":false,"domain":"projects"}
+"how many employees" → {"widget_type":null,"skip_data":false,"domain":"employees"}
+"hi good morning" → {"widget_type":null,"skip_data":true,"domain":null}
+"status of SECMC project" → {"widget_type":null,"skip_data":false,"domain":"projects"}
+"give me a rundown of projects" → {"widget_type":"project_dashboard","skip_data":false,"domain":"projects"}`);
+
+    const result = await Promise.race([classify, timeout]);
+    if (!result) return fallback;
+
+    const text = result.response.text().trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return fallback;
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    console.log(`[WidgetClassifier] "${userQuery.slice(0, 50)}" → type:${parsed.widget_type}, domain:${parsed.domain}, skip:${parsed.skip_data}`);
+    return { ...fallback, ...parsed };
+  } catch (err: any) {
+    console.error('[WidgetClassifier] Failed:', err.message);
+    return fallback;
+  }
 }
 
 const WIDGET_SCHEMAS: Record<string, string> = {
@@ -963,9 +1001,9 @@ export async function streamChat(req: Request, res: Response) {
 
     // ══════════════════════════════════════════════════════════
     // ── Structured Widget: JSON data + React template ──────
-    // For dashboard queries, ask AI for JSON only. React renders it.
-    // This eliminates blank widgets, truncated HTML, empty stat cards.
-    const widgetType = detectWidgetType(message);
+    // LLM classifies the query → widget type. React renders JSON using fixed templates.
+    const widgetClassification = await classifyWidgetIntent(message);
+    const widgetType = widgetClassification.widget_type;
     if (widgetType && context && WIDGET_SCHEMAS[widgetType]) {
       try {
         sendStatus('Building dashboard...');
