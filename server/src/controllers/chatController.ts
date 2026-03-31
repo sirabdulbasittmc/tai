@@ -115,49 +115,46 @@ async function classifyWidgetIntent(userQuery: string): Promise<WidgetClassifica
   if (!env.geminiApiKey) return fallback;
 
   try {
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(env.geminiApiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { maxOutputTokens: 100 } });
-
-    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000));
-    const classify = model.generateContent(`You are a query classifier for TMC AI (TallyMarks Consulting).
-Classify this query. Return JSON only. No explanation.
-
+    // Use REST API with thinkingBudget:0 — SDK wastes all tokens on thinking
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.geminiApiKey}`;
+    const prompt = `Classify this query for TMC AI. Return ONLY a JSON object, no explanation.
 Query: "${userQuery}"
+Return: {"widget_type":"sales_dashboard|project_dashboard|risk_dashboard|pipeline_dashboard|employee_dashboard|null","skip_data":true or false,"domain":"deals|projects|pipeline|employees|accounts|okr|competency|null"}
+Rules: sales_dashboard=sales/deals/revenue/clients. project_dashboard=projects/status/progress/delivery. risk_dashboard=risks/blockers. pipeline_dashboard=pipeline/opportunities. employee_dashboard=employees/staff/team/org. null=specific question/count/conversational. skip_data=true for greetings/weather/jokes.`;
 
-Return exactly:
-{"widget_type":"sales_dashboard|project_dashboard|risk_dashboard|pipeline_dashboard|employee_dashboard|null","skip_data":true/false,"domain":"deals|projects|pipeline|employees|accounts|okr|competency|null"}
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
 
-Rules:
-- "sales_dashboard": sales data, deals, revenue, clients, contracts, sales comparison, revenue trend
-- "project_dashboard": projects, delivery status, milestones, progress, project details, portfolio, behind schedule
-- "risk_dashboard": risks, blockers, critical issues, at-risk items, open risks
-- "pipeline_dashboard": pipeline, opportunities, prospects, open deals, funnel
-- "employee_dashboard": employees, staff, headcount, team, org structure, employee list
-- null: specific single question, count query, conversational, lookup of one item
-- skip_data=true: greetings, thanks, jokes, weather, currency, non-TMC topics
-- domain: primary data domain needed (null if skip_data=true)
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 150, thinkingConfig: { thinkingBudget: 0 } },
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
 
-Examples:
-"show me sales deal" → {"widget_type":"sales_dashboard","skip_data":false,"domain":"deals"}
-"show me project details" → {"widget_type":"project_dashboard","skip_data":false,"domain":"projects"}
-"how many employees" → {"widget_type":null,"skip_data":false,"domain":"employees"}
-"hi good morning" → {"widget_type":null,"skip_data":true,"domain":null}
-"status of SECMC project" → {"widget_type":null,"skip_data":false,"domain":"projects"}
-"give me a rundown of projects" → {"widget_type":"project_dashboard","skip_data":false,"domain":"projects"}`);
+    if (!response.ok) {
+      console.error('[WidgetClassifier] API error:', response.status);
+      return fallback;
+    }
 
-    const result = await Promise.race([classify, timeout]);
-    if (!result) return fallback;
-
-    const text = result.response.text().trim();
+    const data = await response.json();
+    const text = data?.candidates?.[0]?.content?.parts?.filter((p: any) => !p.thought).map((p: any) => p.text).join('') || '';
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return fallback;
+    if (!jsonMatch) {
+      console.log(`[WidgetClassifier] No JSON in response: "${text.slice(0, 100)}"`);
+      return fallback;
+    }
 
     const parsed = JSON.parse(jsonMatch[0]);
     console.log(`[WidgetClassifier] "${userQuery.slice(0, 50)}" → type:${parsed.widget_type}, domain:${parsed.domain}, skip:${parsed.skip_data}`);
     return { ...fallback, ...parsed };
   } catch (err: any) {
-    console.error('[WidgetClassifier] Failed:', err.message);
+    if (err.name === 'AbortError') console.log('[WidgetClassifier] Timed out after 3s');
+    else console.error('[WidgetClassifier] Failed:', err.message);
     return fallback;
   }
 }
