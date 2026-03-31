@@ -237,9 +237,14 @@ export async function streamChat(req: Request, res: Response) {
     const t1 = Date.now() - startTime;
     console.log(`[Pipeline] Step 1 (intent): ${t1}ms | type: ${intent.type}, scope: ${intent.scope}${tierSettings ? ` | tier: ${tierSettings.tierCode}` : ''}`);
 
+    // ── Detect memory clear confirmation (check BEFORE general memory request) ──
+    const isClearConfirm = /\b(clear all memory|yes clear|confirm clear|delete all memory|wipe all)\b/i.test(message);
+
     // ── Detect memory management requests ──────────────────
-    const isMemoryRequest = /\b(forget|clear|reset|delete|erase|wipe|remove).*(memory|memories|know about me|what you know|learned|remember)/i.test(message)
-      || /\b(show|see|review|edit|change|update).*(memory|memories|what you know|what you remember)/i.test(message);
+    const isMemoryRequest = !isClearConfirm && (
+      /\b(forget|clear|reset|delete|erase|wipe|remove).*(memory|memories|know about me|what you know|learned|remember)/i.test(message)
+      || /\b(show|see|review|edit|change|update).*(memory|memories|what you know|what you remember)/i.test(message)
+    );
 
     if (isMemoryRequest && userId) {
       const mem = await getProfileMemory(userId);
@@ -273,8 +278,7 @@ export async function streamChat(req: Request, res: Response) {
       return;
     }
 
-    // ── Detect memory clear confirmation ─────────────────
-    const isClearConfirm = /\b(clear all memory|yes clear|confirm clear|delete all memory|wipe all)\b/i.test(message);
+    // isClearConfirm already defined above
     if (isClearConfirm && userId) {
       const { getProfileMemory: gpm } = await import('../services/memoryService');
       const mem = await gpm(userId);
