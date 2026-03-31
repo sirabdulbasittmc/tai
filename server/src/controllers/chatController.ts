@@ -814,7 +814,7 @@ export async function streamChat(req: Request, res: Response) {
 
         if (chatHistory.length > 0) {
           convPrompt += '\n\nRecent conversation:\n' + chatHistory.reverse().map(m => {
-            const maxLen = m.role === 'user' ? 300 : 1000;
+            const maxLen = m.role === 'user' ? aiConfig.historyMaxCharsUser : aiConfig.historyMaxCharsAssistant;
             return `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, maxLen)}`;
           }).join('\n');
         }
@@ -955,8 +955,7 @@ export async function streamChat(req: Request, res: Response) {
     let historyBlock = '';
     if (chatHistory.length > 0) {
       const turns = chatHistory.reverse().map(m => {
-        // User messages: short. Assistant messages: longer to preserve tables/data for follow-ups
-        const maxLen = m.role === 'user' ? 300 : 1500;
+        const maxLen = m.role === 'user' ? aiConfig.historyMaxCharsUser : aiConfig.historyMaxCharsAssistant;
         return `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, maxLen)}`;
       }).join('\n');
       historyBlock = '── RECENT CONVERSATION ──\n' + turns +

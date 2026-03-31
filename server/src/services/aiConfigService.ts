@@ -16,6 +16,8 @@ interface AIConfig {
   intentTimeoutMs: number;
   dedupCacheTtlMs: number;
   weatherCacheTtlMs: number;
+  historyMaxCharsUser: number;
+  historyMaxCharsAssistant: number;
 }
 
 const DEFAULTS: AIConfig = {
@@ -29,6 +31,8 @@ const DEFAULTS: AIConfig = {
   intentTimeoutMs: 3000,
   dedupCacheTtlMs: 300000,
   weatherCacheTtlMs: 900000,
+  historyMaxCharsUser: 300,
+  historyMaxCharsAssistant: 1500,
 };
 
 let cached: AIConfig | null = null;
@@ -77,4 +81,6 @@ const KEY_MAP: Record<string, keyof AIConfig> = {
   intent_timeout_ms: 'intentTimeoutMs',
   dedup_cache_ttl_ms: 'dedupCacheTtlMs',
   weather_cache_ttl_ms: 'weatherCacheTtlMs',
+  history_max_chars_user: 'historyMaxCharsUser',
+  history_max_chars_assistant: 'historyMaxCharsAssistant',
 };
