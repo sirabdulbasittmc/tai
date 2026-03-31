@@ -4,8 +4,8 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 const PROVIDER_LABELS = {
-  gemini: 'Brain Deep',
-  'gemini-flash': 'Brain Fast',
+  gemini: 'Deep',
+  'gemini-flash': 'Fast',
   groq: 'Groq (Llama 4)',
   openrouter: 'OpenRouter',
   claude: 'Claude Sonnet 4',

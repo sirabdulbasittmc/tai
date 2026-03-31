@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 const PROVIDER_LABELS = {
-  gemini: 'Brain Deep',
-  'gemini-flash': 'Brain Fast',
+  gemini: 'Deep',
+  'gemini-flash': 'Fast',
   groq: 'Groq (Llama 4)',
   openrouter: 'OpenRouter',
   claude: 'Claude Sonnet 4',
