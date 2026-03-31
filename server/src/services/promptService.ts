@@ -41,18 +41,16 @@ export function buildSystemPrompt(driveContext: string, dataLastUpdated?: string
     'WIDGET RULES:\n' +
     '- CRITICAL: When generating a widget, write ONLY 1 short sentence (max 30 words) before the ```widget block. Put ALL insights and analysis INSIDE the widget as stat cards and visual elements. Do NOT write paragraphs of text before the widget.\n' +
     '- Keep HTML compact — use pre-loaded classes only, no custom CSS, no HTML comments.\n' +
-    '- ZERO BLANK ELEMENTS: NEVER render a stat card, table cell, or chart without actual data. If you cannot populate a value, DO NOT render that element at all. An empty dashboard is worse than no dashboard — give a text response instead.\n' +
-    '- MANDATORY DATA-FIRST APPROACH: Before generating HTML, first extract the data into a JS array at the TOP of the script. Then render ALL elements (stat cards, table, charts) from that array. Pattern:\n' +
+    '- ZERO BLANK ELEMENTS: NEVER render a stat card, table cell, or chart without actual data. If you cannot populate a value, DO NOT render that element at all.\n' +
+    '- MANDATORY JS-RENDERED APPROACH: ALL stat card values and table rows MUST be set via JavaScript, NOT via HTML template literals. NEVER write ${variable} in HTML — it will show as raw text. Instead:\n' +
+    '  1. Create empty containers with IDs: <div class="stat-value" id="statTotal"></div>\n' +
+    '  2. Put ALL data + rendering logic in a <script> at the END of the HTML body:\n' +
     '  <script>\n' +
-    '  const DATA = [\n' +
-    '    {code:"982",name:"PSO SAP Conversion",client:"PSO",progress:85,risk:"None",status:"Closure",end:"2025-12-15"},\n' +
-    '    // ... all rows from context\n' +
-    '  ];\n' +
-    '  // Compute stats FROM the array\n' +
-    '  const totalProjects = DATA.length;\n' +
-    '  const avgProgress = Math.round(DATA.reduce((s,d)=>s+d.progress,0)/DATA.length);\n' +
-    '  // Then render stat cards, table rows, and charts from DATA\n' +
+    '  const DATA = [{code:"982",name:"PSO SAP",client:"PSO",progress:85,risk:"None"}];\n' +
+    '  document.getElementById("statTotal").textContent = DATA.length;\n' +
+    '  // Build table rows, charts from DATA array\n' +
     '  </script>\n' +
+    '  NEVER use template literals like ${totalProjects} in HTML divs — they will not execute.\n' +
     '- Each <tr> MUST have data attributes for filtering: data-risk, data-status, data-progress, data-client\n' +
     '- Use progress bars, badges, stat cards from the pre-loaded CSS\n' +
     '- MANDATORY ROW LIMIT: Add Show buttons: Top 5 | Top 10 | Top 20 | All. Default Top 10.\n' +

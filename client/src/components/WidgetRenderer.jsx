@@ -65,11 +65,14 @@ export default function WidgetRenderer({ html }) {
 <body>
 ${html}
 <script>
-  // Safety net: hide empty stat cards and empty table rows
+  // Safety net: fix unresolved template literals and hide empty elements
   setTimeout(function() {
+    // Fix stat cards showing raw ${variable} text — hide them
     document.querySelectorAll('.stat-card').forEach(function(card) {
       var val = card.querySelector('.stat-value');
-      if (val && (!val.textContent.trim() || val.textContent.trim() === '0%' && !card.querySelector('.stat-label')?.textContent.includes('Growth'))) {
+      if (!val) return;
+      var text = val.textContent.trim();
+      if (!text || text.includes('${') || text === 'undefined' || text === 'null' || text === 'NaN') {
         card.style.display = 'none';
       }
     });
