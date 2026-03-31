@@ -42,21 +42,22 @@ export function buildSystemPrompt(driveContext: string, dataLastUpdated?: string
     '- CRITICAL: When generating a widget, write ONLY 1 short sentence (max 30 words) before the ```widget block. Put ALL insights and analysis INSIDE the widget as stat cards and visual elements. Do NOT write paragraphs of text before the widget.\n' +
     '- Keep HTML compact — use pre-loaded classes only, no custom CSS, no HTML comments.\n' +
     '- ZERO BLANK ELEMENTS: NEVER render a stat card, table cell, or chart without actual data. If you cannot populate a value, DO NOT render that element at all.\n' +
-    '- MANDATORY JS-RENDERED APPROACH: ALL stat card values and table rows MUST be set via JavaScript, NOT via HTML template literals. NEVER write ${variable} in HTML — it will show as raw text. Instead:\n' +
-    '  1. Create empty containers with IDs: <div class="stat-value" id="statTotal"></div>\n' +
-    '  2. Put ALL data + rendering logic in a <script> at the END of the HTML body:\n' +
+    '- MANDATORY JS DATA ARRAY: Put a JS array with MAX 10 rows at the top of <script>. Compute stats (totals, averages) from the FULL data context, but only include top 10 rows in the array for table display. Example:\n' +
     '  <script>\n' +
-    '  const DATA = [{code:"982",name:"PSO SAP",client:"PSO",progress:85,risk:"None"}];\n' +
-    '  document.getElementById("statTotal").textContent = DATA.length;\n' +
-    '  // Build table rows, charts from DATA array\n' +
+    '  // Stats computed from ALL data in context\n' +
+    '  const STATS = {total: 599, totalPKR: 113602524, totalUSD: 1249158, avgDeal: 189837};\n' +
+    '  // Top 10 rows only for table display\n' +
+    '  const DATA = [{desc:"PSO SAP",account:"PSO",owner:"Ali",tech:"ERP",currency:"PKR",y1:50997600}, ...];\n' +
+    '  // Render stat cards\n' +
+    '  document.getElementById("s1").textContent = STATS.total;\n' +
+    '  document.getElementById("s2").textContent = "PKR " + (STATS.totalPKR/1e6).toFixed(1) + "M";\n' +
+    '  // Build table from DATA, charts from STATS\n' +
     '  </script>\n' +
-    '  NEVER use template literals like ${totalProjects} in HTML divs — they will not execute.\n' +
-    '- Each <tr> MUST have data attributes for filtering: data-risk, data-status, data-progress, data-client\n' +
-    '- Use progress bars, badges, stat cards from the pre-loaded CSS\n' +
-    '- MANDATORY ROW LIMIT: Add Show buttons: Top 5 | Top 10 | Top 20 | All. Default Top 10.\n' +
+    '- NEVER write ${variable} in HTML — it shows as raw text. Use document.getElementById().textContent.\n' +
+    '- Each <tr> MUST have data attributes for filtering.\n' +
+    '- Show buttons: Top 10 | Top 20 | All. Default Top 10.\n' +
     '- Max 5-6 columns. Short headers. Full entity names.\n' +
-    '- Every dashboard: stat cards + filter buttons + data table + 1 bar chart + 1 doughnut chart\n' +
-    '- Filters must rebuild table AND update charts via chart.update()\n' +
+    '- Every dashboard: stat cards (with REAL computed numbers) + filter buttons + data table + 1 chart\n' +
     '- Chart pattern: <div class="chart-wrap"><canvas id="chartId"></canvas></div>\n\n' +
 
     'ORG CHART:\n' +
