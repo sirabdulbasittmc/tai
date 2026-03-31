@@ -157,47 +157,38 @@ export async function getDataSummaryFromBQ(dataset?: string): Promise<string> {
   const hasData = Object.values(counts).some(c => c > 0);
 
   if (!hasData) {
-    // Fallback: count unique records from chunks (subtract 1 header row per chunk)
     try {
       const bq = getClient();
       const chunkDataset = process.env.BQ_DATASET || 'tmcai_index';
       const chunkTable = process.env.BQ_TABLE || 'chunks';
-      // Read exact counts from system_config (set by Apps Script or admin)
-      // Falls back to counting unique chunks per domain
-      try {
-        const { getConfig } = require('../services/configService');
-        const dataSummaryConfig = await getConfig('TMC-0001', 'data_summary').catch(() => '');
-        if (dataSummaryConfig) {
-          const text = '── DATA SUMMARY (exact counts) ──\n' +
-            dataSummaryConfig +
-            '\nThese are EXACT record counts. Use these for ALL count questions. Do NOT count rows from context chunks.\n── END SUMMARY ──\n\n';
-          bqSummaryCache = { text, fetchedAt: Date.now() };
-          return text;
-        }
-      } catch {}
 
-      // Fallback: count unique chunks per domain
-      const [rows] = await bq.query({
-        query: `SELECT domain, COUNT(DISTINCT chunk_id) as unique_chunks FROM \`${DEFAULT_PROJECT}.${chunkDataset}.${chunkTable}\` WHERE domain NOT IN ('doc') GROUP BY domain ORDER BY unique_chunks DESC`,
+      // Read the Data Summary chunk written by Apps Script (exact unique counts)
+      const [summaryRows] = await bq.query({
+        query: `SELECT content FROM \`${DEFAULT_PROJECT}.${chunkDataset}.${chunkTable}\` WHERE chunk_id = 'data_summary' ORDER BY last_updated DESC LIMIT 1`,
       });
 
-      const domainLabels: Record<string, string> = {
-        employees: 'employees', projects: 'active projects', deals: 'sales deals',
-        pipeline: 'pipeline opportunities', accounts: 'client accounts',
-        competency: 'competency records', okr: 'OKR entries',
-      };
+      if (summaryRows.length > 0 && summaryRows[0].content) {
+        const text = '── ' + summaryRows[0].content +
+          '\nThese are EXACT unique record counts from the source data. Use these for ALL count questions. Do NOT count rows from context chunks — they contain duplicate/overlapping data.\n── END SUMMARY ──\n\n';
+        bqSummaryCache = { text, fetchedAt: Date.now() };
+        return text;
+      }
+
+      // Fallback: no summary chunk yet — tell AI not to guess
+      const [rows] = await bq.query({
+        query: `SELECT domain, COUNT(DISTINCT chunk_id) as unique_chunks FROM \`${DEFAULT_PROJECT}.${chunkDataset}.${chunkTable}\` WHERE domain NOT IN ('doc', 'summary') GROUP BY domain ORDER BY unique_chunks DESC`,
+      });
 
       const lines: string[] = [];
       for (const row of rows as any[]) {
         if (row.domain && row.unique_chunks > 0) {
-          const label = domainLabels[row.domain] || row.domain;
-          lines.push(`${label}: ${row.unique_chunks} data sections`);
+          lines.push(`${row.domain}: data available (${row.unique_chunks} sections)`);
         }
       }
       if (lines.length > 0) {
-        const text = '── DATA SUMMARY (from indexed data) ──\n' +
+        const text = '── DATA AVAILABLE ──\n' +
           lines.join('\n') +
-          '\nFor exact counts, refer to the data context provided below.\n── END SUMMARY ──\n\n';
+          '\nExact counts not available. Count records from the context data provided below.\n── END ──\n\n';
         bqSummaryCache = { text, fetchedAt: Date.now() };
         return text;
       }
