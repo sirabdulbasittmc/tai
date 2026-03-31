@@ -987,8 +987,15 @@ export async function streamChat(req: Request, res: Response) {
     }
 
     let brevityDirective = '';
+    // Calculate output token budget so AI can self-adjust scope
+    const outputBudget = (isDashboardQuery || isWidget) ? aiConfig.maxOutputTokensWidget : intent.type === 'quick_answer' ? aiConfig.maxOutputTokensQuick : aiConfig.maxOutputTokensText;
+
     if (isDashboardQuery && tierSettings?.allowWidgets !== false) {
-      brevityDirective = '── RESPONSE LENGTH ──\nBe COMPACT. For widgets: max 10 rows. 1 sentence before widget. Under 800 words total.\n── END ──\n\n';
+      brevityDirective = `── RESPONSE LENGTH ──\nYour output token budget is ~${outputBudget} tokens. Plan accordingly:\n` +
+        `- At ${outputBudget} tokens you can render ~10 table rows with stat cards and 2 charts.\n` +
+        `- If the data has more rows than you can fit, show TOP 10 by default with a Show filter (Top 5/10/20/All).\n` +
+        `- NEVER start rendering HTML you cannot finish. If data is too large, reduce scope BEFORE generating.\n` +
+        `- If you cannot populate a stat card with a real number, DO NOT render it. Give a text answer instead.\n── END ──\n\n`;
     } else {
       brevityDirective = `── RESPONSE LENGTH ──\n${lengthRules[userLength as string] || lengthRules.moderate}\n── END ──\n\n`;
     }
