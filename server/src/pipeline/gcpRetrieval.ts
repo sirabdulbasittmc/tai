@@ -322,6 +322,30 @@ export async function retrieveContext(userQuery: string): Promise<RetrievalResul
     return { context: null, sources: [], chunkCount: 0, filters: { domain: null, account: null, geography: null, risk_flag: null, department: null }, elapsedMs: 0 };
   }
 
+  // Step 0: For count/quick queries, try data_summary chunk first (saves ~5K tokens)
+  const isCountQuery = /\b(how many|count|total number|how much)\b/i.test(userQuery);
+  if (isCountQuery) {
+    try {
+      const [summaryRows] = await getBQ().query({
+        query: `SELECT chunk_id, file_id, file_name, sheet_name, domain, account, geography, risk_flag, content, content_preview, row_count, last_updated FROM \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\` WHERE chunk_id = 'data_summary' LIMIT 1`,
+      });
+      if (summaryRows.length > 0) {
+        const elapsed = Date.now() - startTime;
+        console.log(`[GCP Retrieval] Count query — using data_summary chunk (${elapsed}ms)`);
+        const summaryChunk = summaryRows[0] as ChunkRow;
+        return {
+          context: `[Source: Data Summary — exact counts]\n${summaryChunk.content}`,
+          sources: [{ file: 'Data Summary', sheet: '(summary)', domain: 'summary' }],
+          chunkCount: 1,
+          filters: { domain: null, account: null, geography: null, risk_flag: null, department: null },
+          elapsedMs: elapsed,
+        };
+      }
+    } catch (e: any) {
+      console.log('[GCP Retrieval] data_summary not found, falling back to full retrieval');
+    }
+  }
+
   // Step 1: Extract filters (quick match first, then Vertex AI)
   const filters = await extractFilters(userQuery);
 
