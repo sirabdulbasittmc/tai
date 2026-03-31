@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { ChatRequest } from '../types';
 import { env } from '../config/env';
 import { getCachedSections, getDataLastUpdated, getDataSummary } from '../services/indexCacheService';
+import { getDataSummaryFromBQ } from '../connectors/BigQueryConnector';
 import { searchIndex } from '../services/searchService';
 import { buildSystemPrompt } from '../services/promptService';
 import { streamClaude } from '../services/claudeService';
@@ -950,7 +951,10 @@ export async function streamChat(req: Request, res: Response) {
 
     // Build prompt
     const intentDirective = buildIntentDirective(intent);
-    const dataSummary = getDataSummary();
+    // Data Summary: use BigQuery live counts when DATA_SOURCE=bigquery, else Drive index
+    const dataSummary = dataSource === 'bigquery'
+      ? await getDataSummaryFromBQ().catch(() => getDataSummary())
+      : getDataSummary();
 
     // Response length control — tier settings take priority, then system_config fallback
     const isDashboardQuery = /dashboard|all projects|all risks|full list|overview|portfolio/i.test(message);

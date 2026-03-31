@@ -20,6 +20,10 @@ server/.gdrive_token.json
 *.log
 logs/
 
+# Database dumps (never commit)
+*.sql.dump
+tmcai_data.sql
+
 # OS files
 .DS_Store
 Thumbs.db

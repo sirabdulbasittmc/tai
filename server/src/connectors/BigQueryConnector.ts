@@ -143,10 +143,48 @@ export async function getTableCounts(dataset?: string): Promise<Record<string, n
 
 // ─── Build Data Summary from BigQuery ─────────────────────────
 
-export async function getDataSummaryFromBQ(dataset?: string): Promise<string> {
-  const counts = await getTableCounts(dataset);
-  const lines: string[] = [];
+// Cache the summary for 5 minutes — avoids BQ call on every chat request
+let bqSummaryCache: { text: string; fetchedAt: number } | null = null;
+const BQ_SUMMARY_TTL = 5 * 60 * 1000;
 
+export async function getDataSummaryFromBQ(dataset?: string): Promise<string> {
+  if (bqSummaryCache && Date.now() - bqSummaryCache.fetchedAt < BQ_SUMMARY_TTL) {
+    return bqSummaryCache.text;
+  }
+
+  // Try live tables first (tmcai_data), then fall back to chunks dataset (tmcai_index)
+  let counts = await getTableCounts(dataset);
+  const hasData = Object.values(counts).some(c => c > 0);
+
+  if (!hasData) {
+    // Fallback: count distinct domains in the chunks table
+    try {
+      const bq = getClient();
+      const chunkDataset = process.env.BQ_DATASET || 'tmcai_index';
+      const chunkTable = process.env.BQ_TABLE || 'chunks';
+      const [rows] = await bq.query({
+        query: `SELECT domain, SUM(row_count) as total_rows FROM \`${DEFAULT_PROJECT}.${chunkDataset}.${chunkTable}\` GROUP BY domain ORDER BY total_rows DESC`,
+      });
+      const lines: string[] = [];
+      for (const row of rows as any[]) {
+        if (row.domain && row.total_rows > 0) {
+          lines.push(`${row.domain}: ${row.total_rows} rows`);
+        }
+      }
+      if (lines.length > 0) {
+        const text = '── DATA SUMMARY (from BigQuery chunks) ──\n' +
+          lines.join('\n') +
+          '\nThese are row counts from the indexed data. Use these for all count questions.\n── END SUMMARY ──\n\n';
+        bqSummaryCache = { text, fetchedAt: Date.now() };
+        return text;
+      }
+    } catch (e: any) {
+      console.error('[BigQuery] Chunk count fallback failed:', e.message);
+    }
+    return '';
+  }
+
+  const lines: string[] = [];
   for (const config of TABLE_REGISTRY) {
     const count = counts[config.table] || 0;
     if (count > 0) {
@@ -154,10 +192,11 @@ export async function getDataSummaryFromBQ(dataset?: string): Promise<string> {
     }
   }
 
-  if (lines.length === 0) return '';
-  return '── DATA SUMMARY (from BigQuery — real-time) ──\n' +
+  const text = '── DATA SUMMARY (from BigQuery — real-time) ──\n' +
     lines.join('\n') +
     '\nThese are EXACT counts from the live database. Use these for all count questions.\n── END SUMMARY ──\n\n';
+  bqSummaryCache = { text, fetchedAt: Date.now() };
+  return text;
 }
 
 // ─── Find matching table for a query ──────────────────────────
