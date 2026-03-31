@@ -117,10 +117,31 @@ async function classifyWidgetIntent(userQuery: string): Promise<WidgetClassifica
   try {
     // Use REST API with thinkingBudget:0 — SDK wastes all tokens on thinking
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.geminiApiKey}`;
-    const prompt = `Classify this query for TMC AI. Return ONLY a JSON object, no explanation.
+    const prompt = `Classify this query for TMC AI. Return ONLY a JSON object.
 Query: "${userQuery}"
-Return: {"widget_type":"sales_dashboard|project_dashboard|risk_dashboard|pipeline_dashboard|employee_dashboard|null","skip_data":true or false,"domain":"deals|projects|pipeline|employees|accounts|okr|competency|null"}
-Rules: sales_dashboard=sales/deals/revenue/clients. project_dashboard=projects/status/progress/delivery. risk_dashboard=risks/blockers. pipeline_dashboard=pipeline/opportunities. employee_dashboard=employees/staff/team/org. null=specific question/count/conversational. skip_data=true for greetings/weather/jokes.`;
+Return: {"widget_type":"sales_dashboard|project_dashboard|risk_dashboard|pipeline_dashboard|employee_dashboard|null","skip_data":true/false,"domain":"deals|projects|pipeline|employees|accounts|okr|competency|null"}
+
+widget_type RULES — BE STRICT:
+- Use a dashboard type ONLY when user wants a BROAD OVERVIEW of many items (all deals, all projects, all risks)
+- Use null for: specific questions, "highest/lowest/top X", count queries, comparisons, lookups, analysis of one entity
+- sales_dashboard: "show me sales dashboard", "revenue overview", "all deals", "sales report"
+- project_dashboard: "project dashboard", "all projects overview", "project portfolio"
+- risk_dashboard: "risk dashboard", "show all risks", "risk overview"
+- pipeline_dashboard: "pipeline dashboard", "show pipeline", "opportunity overview"
+- employee_dashboard: "employee dashboard", "all employees", "team directory", "show me org chart"
+- null (NOT a dashboard): "highest deal", "how many X", "tell me about X", "compare X vs Y", "what is X", "who is X", "status of X", "suggest target", "show me in millions"
+
+skip_data: true ONLY for greetings/weather/jokes/currency/non-business topics
+
+Examples:
+"show me sales dashboard" → {"widget_type":"sales_dashboard","skip_data":false,"domain":"deals"}
+"show me highest sale deal" → {"widget_type":null,"skip_data":false,"domain":"deals"}
+"how many employees" → {"widget_type":null,"skip_data":false,"domain":"employees"}
+"show me project details" → {"widget_type":"project_dashboard","skip_data":false,"domain":"projects"}
+"status of SECMC project" → {"widget_type":null,"skip_data":false,"domain":"projects"}
+"suggest sales target" → {"widget_type":null,"skip_data":false,"domain":"deals"}
+"compare SAP vs SF" → {"widget_type":null,"skip_data":false,"domain":"deals"}
+"hi good morning" → {"widget_type":null,"skip_data":true,"domain":null}`;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
