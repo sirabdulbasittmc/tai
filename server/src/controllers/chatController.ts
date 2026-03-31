@@ -1004,30 +1004,33 @@ export async function streamChat(req: Request, res: Response) {
     if (widgetType && context && WIDGET_SCHEMAS[widgetType]) {
       try {
         sendStatus('Building dashboard...');
-        const widgetPrompt = `You are a data extraction assistant for TallyMarks Consulting (TMC).
-Extract data from the TMC context below and return ONLY valid JSON matching this schema:
+        const widgetPrompt = `Extract data from TMC context. Return ONLY valid JSON matching this schema:
 ${WIDGET_SCHEMAS[widgetType]}
-
-Rules:
-- Use Revenue Year 1 as primary revenue per deal
-- For currency: check Currency column (PKR or USD)
-- Skip rows where Revenue Year 1 is "-" or empty
-- For progress: percentage as number (75.5% → 75.5)
-- For dates: use original format from data
-- Include TOP 20 items in array fields (top_deals, projects, risks, etc.)
-- Compute summary stats from ALL data, not just the top 20
-- If data missing for a field, use null
-- Return ONLY JSON. No explanation. No markdown fences.
-
+Rules: Use Revenue Year 1 as primary revenue. Check Currency column (PKR/USD). Skip empty revenue. Progress as number (75.5%→75.5). Include TOP 20 items in arrays. Compute summary from ALL data. Use null for missing fields.
 CONTEXT:
 ${context.slice(0, 20000)}`;
 
-        let jsonText = '';
-        await streamGemini(widgetPrompt, 'Extract data as JSON', (chunk) => { jsonText += chunk; }, true, 4096, true);
+        // Use REST API with responseMimeType to force valid JSON (not streaming)
+        const widgetUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.geminiApiKey}`;
+        const widgetResponse = await fetch(widgetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: widgetPrompt }] }],
+            generationConfig: {
+              maxOutputTokens: 4096,
+              responseMimeType: 'application/json',
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          }),
+        });
 
-        // Clean up response
-        jsonText = jsonText.replace(/```json|```/g, '').trim();
-        const widgetData = JSON.parse(jsonText);
+        if (!widgetResponse.ok) throw new Error(`Gemini API error: ${widgetResponse.status}`);
+        const widgetResult = await widgetResponse.json();
+        const jsonText = widgetResult?.candidates?.[0]?.content?.parts?.filter((p: any) => !p.thought).map((p: any) => p.text).join('') || '';
+        if (!jsonText) throw new Error('Empty JSON response from Gemini');
+
+        const widgetData = JSON.parse(jsonText.replace(/```json|```/g, '').trim());
 
         // Send widget as a special SSE message
         const briefText = `Here's your ${widgetType.replace(/_/g, ' ')}.`;
