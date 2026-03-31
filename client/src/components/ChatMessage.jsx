@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useState, lazy, Suspense } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+
+const DashboardWidget = lazy(() => import('./widgets/DashboardWidget'));
 
 const PROVIDER_LABELS = {
   gemini: 'Deep',
@@ -49,6 +51,11 @@ export default function ChatMessage({ message, isLastAssistant, isStreaming, onF
             {displayName} <span>via {providerLabel}</span>
           </div>
           <MarkdownRenderer content={message.content} isStreaming={showCursor} onFollowUp={onFollowUp} onOpenArtifact={onOpenArtifact} />
+          {message.widgetData && (
+            <Suspense fallback={<div style={{padding:'12px',color:'#888'}}>Loading dashboard...</div>}>
+              <DashboardWidget data={message.widgetData} />
+            </Suspense>
+          )}
           {message.meta && (
             <div className="msg-meta-row">
               <div className="msg-meta">

@@ -194,7 +194,17 @@ export default function useChat() {
         setStatusText(status);
       },
       conversationId,
-      controller.signal
+      controller.signal,
+      (widgetData) => {
+        if (controller.signal.aborted) return;
+        // Attach widget data to the current assistant message
+        setMessages(prev => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          updated[updated.length - 1] = { ...last, widgetData };
+          return updated;
+        });
+      }
     );
   }, [isStreaming, selectedProvider, conversationId, loadConversations]);
 

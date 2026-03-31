@@ -72,7 +72,7 @@ ${html}
       var val = card.querySelector('.stat-value');
       if (!val) return;
       var text = val.textContent.trim();
-      if (!text || text.includes('${') || text === 'undefined' || text === 'null' || text === 'NaN') {
+      if (!text || text.includes(String.fromCharCode(36)+'{') || text === 'undefined' || text === 'null' || text === 'NaN') {
         card.style.display = 'none';
       }
     });

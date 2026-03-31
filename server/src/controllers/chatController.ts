@@ -101,6 +101,37 @@ const FULL_CONTEXT_LIMITS: Record<string, number> = {
 // Intent types that should use Flash even if user selected Pro (much faster for widgets)
 const FORCE_FLASH_INTENTS = new Set(['quick_answer', 'list', 'dashboard', 'export', 'conversational']);
 
+// ── Structured Widget Detection ──────────────────────────────
+// Instead of AI generating HTML, detect dashboard queries and ask AI for JSON only.
+// React renders the JSON using fixed templates — 100% reliable, no blank cards.
+function detectWidgetType(query: string): string | null {
+  const q = query.toLowerCase();
+  if (q.includes('sales dashboard') || q.includes('revenue dashboard') ||
+      q.includes('show me sales deal') || q.includes('sales overview'))
+    return 'sales_dashboard';
+  if (q.includes('project dashboard') || q.includes('project status dashboard') ||
+      q.includes('project overview') || q.includes('all projects'))
+    return 'project_dashboard';
+  if (q.includes('risk dashboard') || q.includes('all risks') ||
+      q.includes('risk overview') || q.includes('open risks'))
+    return 'risk_dashboard';
+  if (q.includes('pipeline dashboard') || q.includes('pipeline overview') ||
+      q.includes('pipeline health') || q.includes('show me pipeline'))
+    return 'pipeline_dashboard';
+  if (q.includes('employee directory') || q.includes('employee dashboard') ||
+      q.includes('all employees') || q.includes('team dashboard'))
+    return 'employee_dashboard';
+  return null;
+}
+
+const WIDGET_SCHEMAS: Record<string, string> = {
+  sales_dashboard: `{"widget_type":"sales_dashboard","summary":{"total_revenue_pkr":number,"total_revenue_usd":number,"total_deals":number,"total_clients":number,"avg_deal_size_pkr":number},"by_year":[{"year":number,"revenue_pkr":number,"revenue_usd":number,"deals":number}],"by_tech":[{"tech":"string","revenue_pkr":number,"deals":number}],"by_owner":[{"owner":"string","revenue_pkr":number,"deals":number}],"top_deals":[{"description":"string","account":"string","revenue_pkr":number,"revenue_usd":number,"date_closed":"string","owner":"string","tech":"string","currency":"string"}]}`,
+  project_dashboard: `{"widget_type":"project_dashboard","summary":{"total_projects":number,"on_track":number,"at_risk":number,"delayed":number,"avg_progress":number},"by_status":[{"status":"string","count":number}],"projects":[{"project_code":"string","name":"string","account":"string","status":"string","progress":number,"owner":"string","due_date":"string","risk_flag":boolean,"open_risks":number}]}`,
+  risk_dashboard: `{"widget_type":"risk_dashboard","summary":{"total_risks":number,"critical":number,"high":number,"medium":number,"low":number},"risks":[{"risk_id":"string","project":"string","project_code":"string","description":"string","severity":"string","category":"string","owner":"string","status":"string"}]}`,
+  pipeline_dashboard: `{"widget_type":"pipeline_dashboard","summary":{"total_opportunities":number,"total_value_pkr":number,"total_value_usd":number,"avg_probability":number},"by_stage":[{"stage":"string","count":number,"value_pkr":number}],"opportunities":[{"opp_id":"string","name":"string","account":"string","stage":"string","value_pkr":number,"value_usd":number,"probability":number,"owner":"string","expected_close":"string"}]}`,
+  employee_dashboard: `{"widget_type":"employee_dashboard","summary":{"total_employees":number,"departments":[{"department":"string","count":number}],"grades":[{"grade":"string","count":number}],"locations":[{"location":"string","count":number}]},"employees":[{"employee_id":"string","name":"string","department":"string","grade":"string","role":"string","location":"string","manager":"string"}]}`,
+};
+
 // ALL data queries use full section retrieval for consistency.
 // Only 'conversational' skips data entirely (handled earlier).
 // This ensures "how many projects?" and "project dashboard" always see the same data.
@@ -931,6 +962,72 @@ export async function streamChat(req: Request, res: Response) {
     }
 
     // ══════════════════════════════════════════════════════════
+    // ── Structured Widget: JSON data + React template ──────
+    // For dashboard queries, ask AI for JSON only. React renders it.
+    // This eliminates blank widgets, truncated HTML, empty stat cards.
+    const widgetType = detectWidgetType(message);
+    if (widgetType && context && WIDGET_SCHEMAS[widgetType]) {
+      try {
+        sendStatus('Building dashboard...');
+        const widgetPrompt = `You are a data extraction assistant for TallyMarks Consulting (TMC).
+Extract data from the TMC context below and return ONLY valid JSON matching this schema:
+${WIDGET_SCHEMAS[widgetType]}
+
+Rules:
+- Use Revenue Year 1 as primary revenue per deal
+- For currency: check Currency column (PKR or USD)
+- Skip rows where Revenue Year 1 is "-" or empty
+- For progress: percentage as number (75.5% → 75.5)
+- For dates: use original format from data
+- Include TOP 20 items in array fields (top_deals, projects, risks, etc.)
+- Compute summary stats from ALL data, not just the top 20
+- If data missing for a field, use null
+- Return ONLY JSON. No explanation. No markdown fences.
+
+CONTEXT:
+${context.slice(0, 20000)}`;
+
+        let jsonText = '';
+        await streamGemini(widgetPrompt, 'Extract data as JSON', (chunk) => { jsonText += chunk; }, true, 4096, true);
+
+        // Clean up response
+        jsonText = jsonText.replace(/```json|```/g, '').trim();
+        const widgetData = JSON.parse(jsonText);
+
+        // Send widget as a special SSE message
+        const briefText = `Here's your ${widgetType.replace(/_/g, ' ')}.`;
+        sendChunkDirect(briefText);
+        if (!clientDisconnected) {
+          res.write(`data: ${JSON.stringify({ type: 'widget_data', widget: widgetData })}\n\n`);
+        }
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const estimatedTokens = Math.ceil(jsonText.length / 4);
+        const contextTokens = Math.ceil(widgetPrompt.length / 4);
+        const meta = { type: 'meta', elapsed, outputTokens: estimatedTokens, inputTokens: contextTokens, totalTokens: estimatedTokens + contextTokens, conversationId };
+        if (!clientDisconnected) {
+          res.write(`data: ${JSON.stringify(meta)}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+        }
+
+        // Save to history
+        if (userId && conversationId) {
+          addMessage({ clientNumber: clientNumber!, conversationId, role: 'user', content: message }).catch(() => {});
+          addMessage({ clientNumber: clientNumber!, conversationId, role: 'assistant', content: briefText + '\n```widget_json\n' + jsonText.slice(0, 500) + '\n```', provider }).catch(() => {});
+        }
+        if (userId && clientNumber) {
+          trackUsage(clientNumber, userId, provider, contextTokens, estimatedTokens, message, 'dashboard', Math.round(parseFloat(elapsed) * 1000)).catch(() => {});
+        }
+
+        console.log(`[Widget] ${widgetType}: ${elapsed}s, ${estimatedTokens} output tokens`);
+        res.end();
+        return;
+      } catch (widgetErr: any) {
+        console.error(`[Widget] JSON extraction failed for ${widgetType}:`, widgetErr.message);
+        // Fall through to normal AI generation
+      }
+    }
+
     // ── Build user profile directive ───────────────────────
     let profileDirective = '';
     if (userProfile) {
