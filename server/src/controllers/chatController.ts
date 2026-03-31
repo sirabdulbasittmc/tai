@@ -1036,10 +1036,9 @@ export async function streamChat(req: Request, res: Response) {
         sendChunk(text);
       };
 
-      // LLM call — cap output tokens: tier setting → intent-based fallback
-      // Dashboard/widget HTML with JS data array needs 8192 tokens minimum
+      // LLM call — cap output tokens: all from system_config (Admin → Settings → AI Context & Tokens)
       const tierTokenCap = tierSettings?.maxOutputTokens || 0;
-      const intentTokenCap = isDashboardQuery ? 8192 : isWidget ? Math.max(aiConfig.maxOutputTokensWidget, 8192) : intent.type === 'quick_answer' ? aiConfig.maxOutputTokensQuick : aiConfig.maxOutputTokensText;
+      const intentTokenCap = (isDashboardQuery || isWidget) ? aiConfig.maxOutputTokensWidget : intent.type === 'quick_answer' ? aiConfig.maxOutputTokensQuick : aiConfig.maxOutputTokensText;
       // Use tier cap for text responses (brief tiers get smaller output), but respect intent caps for widgets/dashboards
       const maxTokens = (tierTokenCap > 0 && !isWidget && !isDashboardQuery) ? Math.min(tierTokenCap, intentTokenCap) : intentTokenCap;
       // Use REST API with controlled thinking for ALL Gemini calls
