@@ -338,7 +338,9 @@ export async function streamChat(req: Request, res: Response) {
       && !hasDataKeywords; // Never treat data queries as email/calendar
     // Admin queries (logs, token usage, apply fixes) always go to conversational path
     const isAdminQuery = /\b(system log|logs?|token cost|token consumption|usage|billing|suggest fix|apply all fixes|apply.*fix)/i.test(message) && req.user?.isAdmin;
-    const isConversational = (intent.type === 'conversational' && !hasDataKeywords) || (isShortFollowUp && prevWasConversational) || isEmailCalendarQuery || isAdminQuery;
+    // Personal/opinion queries should always go to conversational path (warm personality)
+    const isPersonalQuery = /\b(think about me|know about me|how am i|who am i|my name|about me|my birthday|my hobby|my family|how do you feel|do you like me|your opinion|are you happy|are you sad|i am (sad|happy|tensed|stressed|worried|excited|angry|tired|bored|sick|lonely))\b/i.test(message);
+    const isConversational = (intent.type === 'conversational' && !hasDataKeywords) || (isShortFollowUp && prevWasConversational) || isEmailCalendarQuery || isAdminQuery || isPersonalQuery;
     const isWidget = ['dashboard', 'list', 'export', 'comparison'].includes(intent.type) || intent.format === 'widget' || intent.format === 'hierarchy';
 
     // ── Widget Modification Detection ─────────────────────────
