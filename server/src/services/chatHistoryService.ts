@@ -64,16 +64,23 @@ export async function addMessage(data: {
     },
   });
 
-  await prisma.conversation.update({
-    where: { id: data.conversationId },
-    data: { messageCount: { increment: 1 }, provider: data.provider || undefined, updatedAt: new Date() },
-  });
+  // Update conversation count + title (use raw SQL for reliability)
+  try {
+    await prisma.$executeRawUnsafe(
+      'UPDATE conversations SET message_count = message_count + 1, provider = COALESCE($2, provider), updated_at = NOW() WHERE id = $1',
+      data.conversationId, data.provider || null
+    );
 
-  // Auto-title from first user message
-  const conv = await prisma.conversation.findUnique({ where: { id: data.conversationId } });
-  if (conv && !conv.title && data.role === 'user') {
-    const title = data.content.length > 80 ? data.content.slice(0, 77) + '...' : data.content;
-    await prisma.conversation.update({ where: { id: data.conversationId }, data: { title } });
+    // Auto-title from first user message
+    if (data.role === 'user') {
+      const title = data.content.length > 80 ? data.content.slice(0, 77) + '...' : data.content;
+      await prisma.$executeRawUnsafe(
+        'UPDATE conversations SET title = $2 WHERE id = $1 AND (title IS NULL OR title = \'\')',
+        data.conversationId, title
+      );
+    }
+  } catch (e: any) {
+    console.error('[ChatHistory] Failed to update conversation:', e.message);
   }
 
   return message;
