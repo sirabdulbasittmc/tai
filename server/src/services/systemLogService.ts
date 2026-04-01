@@ -199,6 +199,14 @@ export async function caterLog(logId: number, userId: number, note?: string): Pr
   `, userId, note || 'Marked as catered', logId);
 }
 
+// ─── Mark log as ignored ─────────────────────────────────────
+
+export async function ignoreLog(logId: number, userId: number, note?: string): Promise<void> {
+  await prisma.$executeRawUnsafe(`
+    UPDATE system_logs SET status = 'ignored', resolved_by = $1, resolved_at = NOW(), resolution_note = $2 WHERE id = $3
+  `, userId, note || 'Ignored by admin');
+}
+
 // ─── Mark log as resolved ─────────────────────────────────────
 
 export async function resolveLog(logId: number, userId: number, note?: string): Promise<void> {

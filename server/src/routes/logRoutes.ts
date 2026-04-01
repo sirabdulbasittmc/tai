@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth, requireAdmin } from '../middleware/auth';
-import { getLogs, getLogSummary, caterLog, resolveLog, generateSuggestionsForLogs } from '../services/systemLogService';
+import { getLogs, getLogSummary, caterLog, ignoreLog, resolveLog, generateSuggestionsForLogs } from '../services/systemLogService';
+import { setConfig } from '../services/configService';
+import { clearAIConfigCache } from '../services/aiConfigService';
 
 const router = Router();
 router.use(requireAuth);
@@ -33,6 +35,76 @@ router.patch('/:id/cater', async (req: Request, res: Response) => {
 router.patch('/:id/resolve', async (req: Request, res: Response) => {
   await resolveLog(parseInt(req.params.id as string), req.user!.id, req.body.note);
   res.json({ success: true });
+});
+
+// Mark as ignored
+router.patch('/:id/ignore', async (req: Request, res: Response) => {
+  await ignoreLog(parseInt(req.params.id as string), req.user!.id, req.body.note);
+  res.json({ success: true });
+});
+
+// Fix: apply config change + mark as catered
+router.post('/:id/fix', async (req: Request, res: Response) => {
+  try {
+    const { fixes } = req.body; // [{key: 'context_limit_full', value: '80000'}]
+    const clientNumber = req.user!.clientNumber;
+
+    if (fixes && Array.isArray(fixes)) {
+      for (const fix of fixes) {
+        if (fix.key && fix.value) {
+          await setConfig(clientNumber, fix.key, fix.value);
+        }
+      }
+      clearAIConfigCache();
+    }
+
+    await caterLog(parseInt(req.params.id as string), req.user!.id, `Fixed: ${fixes?.map((f: any) => `${f.key}=${f.value}`).join(', ') || 'Applied'}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk fix all open logs
+router.post('/fix-all', async (req: Request, res: Response) => {
+  try {
+    const { fixes, logIds } = req.body;
+    const clientNumber = req.user!.clientNumber;
+
+    if (fixes && Array.isArray(fixes)) {
+      for (const fix of fixes) {
+        if (fix.key && fix.value) {
+          await setConfig(clientNumber, fix.key, fix.value);
+        }
+      }
+      clearAIConfigCache();
+    }
+
+    if (logIds && Array.isArray(logIds)) {
+      for (const id of logIds) {
+        await caterLog(id, req.user!.id, `Bulk fix: ${fixes?.map((f: any) => `${f.key}=${f.value}`).join(', ') || 'Applied'}`);
+      }
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk ignore all open logs
+router.post('/ignore-all', async (req: Request, res: Response) => {
+  try {
+    const { logIds } = req.body;
+    if (logIds && Array.isArray(logIds)) {
+      for (const id of logIds) {
+        await ignoreLog(id, req.user!.id, 'Bulk ignored');
+      }
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Generate AI suggestions for open logs

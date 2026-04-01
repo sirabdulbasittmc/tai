@@ -773,21 +773,39 @@ export async function streamChat(req: Request, res: Response) {
           sendStatus('Fetching system logs...');
           try {
             const { getLogs, getLogSummary } = require('../services/systemLogService');
-            const [logs, summary] = await Promise.all([getLogs({ limit: 15 }), getLogSummary()]);
-            const logText = (logs as any[]).map((l: any, i: number) =>
-              `${i+1}. [${l.level}] ${l.category} (Log #${l.id}) | ${l.message} | Status: ${l.status} | Seen: ${l.recurrence_count}x${l.suggestion ? '\n   Fix: ' + l.suggestion : ''}`
-            ).join('\n');
-            // Build fix actions list for auto-apply
-            const fixableActions: string[] = [];
-            for (const l of logs as any[]) {
-              if (l.status === 'open' && l.suggestion && l.suggestion.includes('context_limit_full')) {
-                const valMatch = l.suggestion.match(/at least ([\d,]+)/);
-                if (valMatch) fixableActions.push(`context_limit_full=${valMatch[1].replace(/,/g, '')}`);
-              }
-            }
-            const fixTag = fixableActions.length > 0 ? `\n\n[apply_fixes:${fixableActions.join('|')}:Fix All Issues]` : '';
+            const [logs, summary] = await Promise.all([getLogs({ status: 'open', limit: 15 }), getLogSummary()]);
 
-            convPrompt += `\n\nSYSTEM LOGS (${summary.open} open, ${summary.recurring} recurring):\n${logText || 'No open issues — system is healthy!'}${fixTag}\n\nIMPORTANT: You DO have access to these logs from the database. Present them clearly with the fix suggestion for each. KEEP the [apply_fixes:...] tag EXACTLY as shown at the end — it becomes a clickable "Fix All" button. After showing all logs, add a brief note: "Click Fix All to apply all suggested changes automatically." NEVER say you don't have access to logs.`;
+            // Build structured log entries with fix/ignore action tags
+            const allFixes: string[] = [];
+            const allLogIds: number[] = [];
+            const logText = (logs as any[]).map((l: any) => {
+              // Extract fixable config key=value from suggestion
+              let fixAction = '';
+              if (l.suggestion) {
+                const configMatch = l.suggestion.match(/(context_limit_full|context_limit_fast|max_output_tokens_text|max_output_tokens_widget|max_output_tokens_quick)\D+(\d[\d,]*)/);
+                if (configMatch) {
+                  const key = configMatch[1];
+                  const val = configMatch[2].replace(/,/g, '');
+                  fixAction = `${key}=${val}`;
+                  allFixes.push(fixAction);
+                }
+              }
+              allLogIds.push(l.id);
+
+              return `**${l.level === 'error' ? '❌' : '⚠️'} Log #${l.id} — ${l.category}**\n` +
+                `**Issue:** ${l.message}\n` +
+                `**Seen:** ${l.recurrence_count}x | **Status:** ${l.status}\n` +
+                (l.suggestion ? `**Solution:** ${l.suggestion}\n` : '') +
+                (fixAction ? `[log_fix:${l.id}:${fixAction}:🔧 Fix] ` : '') +
+                `[log_ignore:${l.id}:⊘ Ignore]\n---`;
+            }).join('\n\n');
+
+            // Build bulk action tags
+            const bulkTags = allLogIds.length > 0
+              ? `\n\n[log_fix_all:${allLogIds.join(',')}:${[...new Set(allFixes)].join('|')}:🔧 Fix All] [log_ignore_all:${allLogIds.join(',')}:⊘ Ignore All]`
+              : '';
+
+            convPrompt += `\n\nSYSTEM LOGS (${summary.open} open, ${summary.recurring} recurring):\n\n${logText || 'No open issues — system is healthy!'}${bulkTags}\n\nIMPORTANT: Present each log with its Issue, Seen count, and Solution. KEEP all [log_fix:...] and [log_ignore:...] tags EXACTLY as shown — they become clickable buttons. Do NOT modify or remove them. Present the bulk Fix All and Ignore All at the end.`;
           } catch { convPrompt += '\n\nCould not fetch system logs.'; }
         }
 

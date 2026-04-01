@@ -98,9 +98,29 @@ function formatMarkdown(text) {
     return `<a class="drill-link" data-drill-type="${type}" data-drill-query="${query}" title="${tooltip}">${text}</a>`;
   });
 
-  // Fix All button: [apply_fixes:action1|action2:Label]
+  // Legacy Fix All button: [apply_fixes:action1|action2:Label]
   t = t.replace(/\[apply_fixes:([^:]+):([^\]]+)\]/g, (_, actions, label) =>
     `<div class="draft-actions" style="margin-top:12px"><button class="action-btn action-confirm" data-action="apply_fixes" data-fixes="${actions}">${label}</button></div>`
+  );
+
+  // Per-log Fix button: [log_fix:logId:key=value:Label]
+  t = t.replace(/\[log_fix:(\d+):([^:]+):([^\]]+)\]/g, (_, logId, fixes, label) =>
+    `<button class="action-btn action-log-fix" data-action="log_fix" data-log-id="${logId}" data-fixes="${fixes}" style="background:#cc6b4a;color:#fff;border:none;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px;margin-right:6px">${label}</button>`
+  );
+
+  // Per-log Ignore button: [log_ignore:logId:Label]
+  t = t.replace(/\[log_ignore:(\d+):([^\]]+)\]/g, (_, logId, label) =>
+    `<button class="action-btn action-log-ignore" data-action="log_ignore" data-log-id="${logId}" style="background:#333;color:#aaa;border:1px solid #555;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">${label}</button>`
+  );
+
+  // Bulk Fix All: [log_fix_all:id1,id2:key1=val1|key2=val2:Label]
+  t = t.replace(/\[log_fix_all:([^:]+):([^:]*):([^\]]+)\]/g, (_, logIds, fixes, label) =>
+    `<button class="action-btn action-log-fix" data-action="log_fix_all" data-log-ids="${logIds}" data-fixes="${fixes}" style="background:#cc6b4a;color:#fff;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;margin-right:8px">${label}</button>`
+  );
+
+  // Bulk Ignore All: [log_ignore_all:id1,id2:Label]
+  t = t.replace(/\[log_ignore_all:([^:]+):([^\]]+)\]/g, (_, logIds, label) =>
+    `<button class="action-btn action-log-ignore" data-action="log_ignore_all" data-log-ids="${logIds}" style="background:#333;color:#aaa;border:1px solid #555;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">${label}</button>`
   );
 
   // Email reply/replyall buttons: [reply:email:subject:Label] [replyall:email:subject:Label]
@@ -204,6 +224,55 @@ export default function MarkdownRenderer({ content, isStreaming, onFollowUp, onO
     } else if (action === 'apply_fixes') {
       const fixes = btn.dataset.fixes;
       onFollowUp(`yes apply all fixes: ${fixes}`);
+    } else if (action === 'log_fix') {
+      const logId = btn.dataset.logId;
+      const fixes = btn.dataset.fixes;
+      const fixArray = fixes ? fixes.split('|').map(f => { const [key, value] = f.split('='); return { key, value }; }) : [];
+      btn.disabled = true;
+      btn.textContent = 'Fixing...';
+      import('../services/api').then(({ default: api }) => {
+        api.post(`/logs/${logId}/fix`, { fixes: fixArray }).then(() => {
+          btn.textContent = '✅ Fixed';
+          btn.style.background = '#22c55e';
+          const ignoreBtn = btn.nextElementSibling;
+          if (ignoreBtn) ignoreBtn.style.display = 'none';
+        }).catch(() => { btn.textContent = '❌ Failed'; btn.disabled = false; });
+      });
+    } else if (action === 'log_ignore') {
+      const logId = btn.dataset.logId;
+      btn.disabled = true;
+      btn.textContent = 'Ignoring...';
+      import('../services/api').then(({ default: api }) => {
+        api.patch(`/logs/${logId}/ignore`).then(() => {
+          btn.textContent = '⊘ Ignored';
+          btn.style.background = '#555';
+          const fixBtn = btn.previousElementSibling;
+          if (fixBtn?.dataset?.action === 'log_fix') fixBtn.style.display = 'none';
+        }).catch(() => { btn.textContent = '❌ Failed'; btn.disabled = false; });
+      });
+    } else if (action === 'log_fix_all') {
+      const logIds = btn.dataset.logIds.split(',').map(Number);
+      const fixes = btn.dataset.fixes ? btn.dataset.fixes.split('|').map(f => { const [key, value] = f.split('='); return { key, value }; }) : [];
+      btn.disabled = true;
+      btn.textContent = 'Fixing all...';
+      import('../services/api').then(({ default: api }) => {
+        api.post('/logs/fix-all', { fixes, logIds }).then(() => {
+          btn.textContent = '✅ All Fixed';
+          btn.style.background = '#22c55e';
+          document.querySelectorAll('.action-log-fix, .action-log-ignore').forEach(b => { if (b !== btn) b.style.display = 'none'; });
+        }).catch(() => { btn.textContent = '❌ Failed'; btn.disabled = false; });
+      });
+    } else if (action === 'log_ignore_all') {
+      const logIds = btn.dataset.logIds.split(',').map(Number);
+      btn.disabled = true;
+      btn.textContent = 'Ignoring all...';
+      import('../services/api').then(({ default: api }) => {
+        api.post('/logs/ignore-all', { logIds }).then(() => {
+          btn.textContent = '⊘ All Ignored';
+          btn.style.background = '#555';
+          document.querySelectorAll('.action-log-fix, .action-log-ignore').forEach(b => { if (b !== btn) b.style.display = 'none'; });
+        }).catch(() => { btn.textContent = '❌ Failed'; btn.disabled = false; });
+      });
     }
   }, [onFollowUp]);
 
