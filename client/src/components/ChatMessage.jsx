@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+
+const DashboardWidget = lazy(() => import('./widgets/DashboardWidget'));
 
 const PROVIDER_LABELS = {
   gemini: 'Deep',
@@ -14,6 +16,13 @@ const PROVIDER_LABELS = {
 
 export default function ChatMessage({ message, isLastAssistant, isStreaming, onFollowUp, onOpenArtifact, previousUserMessage }) {
   const { user, appName, aiName, logoUrl } = useAuth();
+
+  // Auto-open right panel when widget data arrives
+  useEffect(() => {
+    if (message.widgetData && isLastAssistant && onOpenArtifact) {
+      onOpenArtifact('dashboard', null, message.widgetData?.title || 'Dashboard', message.widgetData);
+    }
+  }, [message.widgetData]);
   const displayName = aiName || appName || 'AI Intelligence';
   const userInitial = user?.name?.charAt(0)?.toUpperCase() || 'U';
   const userName = user?.name?.split(' ')[0] || 'You';
@@ -50,14 +59,9 @@ export default function ChatMessage({ message, isLastAssistant, isStreaming, onF
           </div>
           <MarkdownRenderer content={message.content} isStreaming={showCursor} onFollowUp={onFollowUp} onOpenArtifact={onOpenArtifact} />
           {message.widgetData && (
-            <div
-              className="artifact-chip"
-              onClick={() => onOpenArtifact?.('dashboard', null, message.widgetData?.widget_type?.replace(/_/g, ' ') || 'Dashboard', message.widgetData)}
-              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8, padding: '8px 14px', background: '#252525', border: '1px solid #444', borderRadius: 8 }}
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#cc6b4a" strokeWidth="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>
-              <span style={{ color: '#cc6b4a', fontWeight: 500 }}>View {message.widgetData?.widget_type?.replace(/_/g, ' ') || 'dashboard'}</span>
-            </div>
+            <Suspense fallback={<div style={{padding:12,color:'#888'}}>Loading dashboard...</div>}>
+              <DashboardWidget data={message.widgetData} />
+            </Suspense>
           )}
           {message.meta && (
             <div className="msg-meta-row">

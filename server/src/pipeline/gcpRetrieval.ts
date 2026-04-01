@@ -134,15 +134,23 @@ function quickDomainMatch(query: string): string | null {
 function getTopK(userQuery: string, filters: Filters): number {
   const q = userQuery.toLowerCase();
 
-  // Dashboard/summary need more chunks
-  if (q.includes('dashboard') || q.includes('summary') ||
-      q.includes('overview') || q.includes('portfolio') ||
-      q.includes('all projects') || q.includes('everything'))
-    return 8;
+  // Superlative queries — just need data_summary + 1-2 chunks
+  if (/\b(highest|lowest|biggest|smallest|most|least|best|worst|top 1|maximum|minimum)\b/.test(q))
+    return 2;
 
   // Count queries need very few
   if (q.includes('how many') || q.includes('count') || q.includes('total number'))
     return 2;
+
+  // Dashboard/summary — cap per domain for speed
+  if (q.includes('dashboard') || q.includes('summary') ||
+      q.includes('overview') || q.includes('portfolio') ||
+      q.includes('all projects') || q.includes('everything')) {
+    // Projects: 47 items fit in 3 chunks. Employees: 661 need more but dashboard shows top 20.
+    if (filters.domain === 'projects') return 5;
+    if (filters.domain === 'employees') return 5;
+    return 6;
+  }
 
   // Specific item lookup
   if (filters.account || q.includes('who is') || q.includes('what is the status'))
@@ -150,9 +158,9 @@ function getTopK(userQuery: string, filters: Filters): number {
 
   // List queries
   if (q.includes('list') || q.includes('show all') || q.includes('give me all'))
-    return 6;
+    return 5;
 
-  return 5;
+  return 4;
 }
 
 // ─── FIX 4: CONTEXT CAP ─────────────────────────────────────────────────────

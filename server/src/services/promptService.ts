@@ -76,6 +76,15 @@ export function buildSystemPrompt(driveContext: string, dataLastUpdated?: string
     '- Count ONLY rows with Project Code — not headers/separators\n' +
     '- Use EXACT values from data. Never fabricate codes or names.\n' +
     '- Sort deals by value (largest first), projects by progress (highest first)\n' +
+    '- EXACT COLUMN NAMES IN SALES DATA:\n' +
+    '  "Date Closed" = when deal was signed (NOT "Closed Date" or "date" or "year")\n' +
+    '  "Revenue Year 1" = primary annual revenue for the deal\n' +
+    '  "Account" = client/company name\n' +
+    '  "Currency" = PKR or USD\n' +
+    '  "Tech" = technology category (ERP/Cloud/Qlik/AI/Cyber/BTP/SF)\n' +
+    '  "Deal Owner" = sales person name\n' +
+    '  For year-wise analysis: extract year from "Date Closed" column.\n' +
+    '  Date formats: "30-Sept-2022"→2022, "11/23/2023"→2023, "3/27/2023"→2023\n' +
     '- If answer not in data, say so clearly\n' +
     '- IMPORTANT: You ALWAYS have TMC data available in the context below. NEVER say "I don\'t have access" or "I cannot find" — if data is in context, USE IT. Only say data is unavailable if the context section is completely empty.\n\n' +
 
