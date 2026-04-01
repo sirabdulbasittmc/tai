@@ -32,6 +32,7 @@ import { trackUsage } from '../services/tokenUsageService';
 import { getInbox, getUnreadCount, sendUserEmail, searchEmails } from '../services/gmailService';
 import { getTodayEvents, getUpcomingEvents, createEvent, findFreeTime } from '../services/calendarService';
 import { getUserTier, TierSettings } from '../services/tierService';
+import { getPKRperUSD } from '../services/currencyService';
 
 // ── Request Deduplication Cache ────────────────────────────────
 interface CachedResponse { chunks: string[]; meta: any; timestamp: number; }
@@ -119,28 +120,31 @@ async function classifyWidgetIntent(userQuery: string): Promise<WidgetClassifica
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.geminiApiKey}`;
     const prompt = `Classify this query for TMC AI. Return ONLY a JSON object.
 Query: "${userQuery}"
-Return: {"widget_type":"sales_dashboard|project_dashboard|risk_dashboard|pipeline_dashboard|employee_dashboard|null","skip_data":true/false,"domain":"deals|projects|pipeline|employees|accounts|okr|competency|null"}
+Return: {"widget_type":"dashboard|table|chart|null","skip_data":true/false,"domain":"deals|projects|pipeline|employees|accounts|okr|competency|null"}
 
-widget_type RULES — BE STRICT:
-- Use a dashboard type ONLY when user wants a BROAD OVERVIEW of many items (all deals, all projects, all risks)
-- Use null for: specific questions, "highest/lowest/top X", count queries, comparisons, lookups, analysis of one entity
-- sales_dashboard: "show me sales dashboard", "revenue overview", "all deals", "sales report"
-- project_dashboard: "project dashboard", "all projects overview", "project portfolio"
-- risk_dashboard: "risk dashboard", "show all risks", "risk overview"
-- pipeline_dashboard: "pipeline dashboard", "show pipeline", "opportunity overview"
-- employee_dashboard: "employee dashboard", "all employees", "team directory", "show me org chart"
-- null (NOT a dashboard): "highest deal", "how many X", "tell me about X", "compare X vs Y", "what is X", "who is X", "status of X", "suggest target", "show me in millions"
+widget_type — 4 values only:
+- "dashboard": user wants a VISUAL OVERVIEW with stat cards + table (dashboard, overview, summary of many items, portfolio, all X)
+- "table": user wants a LIST or DIRECTORY (list all X, show all X, employee directory, all deals)
+- "chart": user wants a VISUAL COMPARISON (compare X vs Y over time, trend, breakdown by category)
+- null: everything else — specific question, count, lookup, analysis, conversational
 
-skip_data: true ONLY for greetings/weather/jokes/currency/non-business topics
+STRICT RULES:
+- "dashboard" = broad overview with numbers at top + details below
+- null = specific question about ONE entity, count query, "highest/lowest", "suggest target", follow-up
+- skip_data=true = greetings, weather, jokes, currency rates, non-TMC topics
 
 Examples:
-"show me sales dashboard" → {"widget_type":"sales_dashboard","skip_data":false,"domain":"deals"}
-"show me highest sale deal" → {"widget_type":null,"skip_data":false,"domain":"deals"}
-"how many employees" → {"widget_type":null,"skip_data":false,"domain":"employees"}
-"show me project details" → {"widget_type":"project_dashboard","skip_data":false,"domain":"projects"}
-"status of SECMC project" → {"widget_type":null,"skip_data":false,"domain":"projects"}
+"show me sales dashboard" → {"widget_type":"dashboard","skip_data":false,"domain":"deals"}
+"project portfolio overview" → {"widget_type":"dashboard","skip_data":false,"domain":"projects"}
+"show me all risks" → {"widget_type":"dashboard","skip_data":false,"domain":"projects"}
+"competency dashboard" → {"widget_type":"dashboard","skip_data":false,"domain":"competency"}
+"list all employees" → {"widget_type":"table","skip_data":false,"domain":"employees"}
+"show me org chart" → {"widget_type":"dashboard","skip_data":false,"domain":"employees"}
+"compare revenue by year" → {"widget_type":"chart","skip_data":false,"domain":"deals"}
+"highest deal of 2024" → {"widget_type":null,"skip_data":false,"domain":"deals"}
+"how many projects" → {"widget_type":null,"skip_data":false,"domain":"projects"}
+"status of SECMC" → {"widget_type":null,"skip_data":false,"domain":"projects"}
 "suggest sales target" → {"widget_type":null,"skip_data":false,"domain":"deals"}
-"compare SAP vs SF" → {"widget_type":null,"skip_data":false,"domain":"deals"}
 "hi good morning" → {"widget_type":null,"skip_data":true,"domain":null}`;
 
     const controller = new AbortController();
@@ -180,13 +184,21 @@ Examples:
   }
 }
 
-const WIDGET_SCHEMAS: Record<string, string> = {
-  sales_dashboard: `{"widget_type":"sales_dashboard","summary":{"total_revenue_pkr":number,"total_revenue_usd":number,"total_deals":number,"total_clients":number,"avg_deal_size_pkr":number},"by_year":[{"year":number,"revenue_pkr":number,"revenue_usd":number,"deals":number}],"by_tech":[{"tech":"string","revenue_pkr":number,"deals":number}],"by_owner":[{"owner":"string","revenue_pkr":number,"deals":number}],"top_deals":[{"description":"string","account":"string","revenue_pkr":number,"revenue_usd":number,"date_closed":"string","owner":"string","tech":"string","currency":"string"}]}`,
-  project_dashboard: `{"widget_type":"project_dashboard","summary":{"total_projects":number,"on_track":number,"at_risk":number,"delayed":number,"avg_progress":number},"by_status":[{"status":"string","count":number}],"projects":[{"project_code":"string","name":"string","account":"string","status":"string","progress":number,"owner":"string","due_date":"string","risk_flag":boolean,"open_risks":number}]}`,
-  risk_dashboard: `{"widget_type":"risk_dashboard","summary":{"total_risks":number,"critical":number,"high":number,"medium":number,"low":number},"risks":[{"risk_id":"string","project":"string","project_code":"string","description":"string","severity":"string","category":"string","owner":"string","status":"string"}]}`,
-  pipeline_dashboard: `{"widget_type":"pipeline_dashboard","summary":{"total_opportunities":number,"total_value_pkr":number,"total_value_usd":number,"avg_probability":number},"by_stage":[{"stage":"string","count":number,"value_pkr":number}],"opportunities":[{"opp_id":"string","name":"string","account":"string","stage":"string","value_pkr":number,"value_usd":number,"probability":number,"owner":"string","expected_close":"string"}]}`,
-  employee_dashboard: `{"widget_type":"employee_dashboard","summary":{"total_employees":number,"departments":[{"department":"string","count":number}],"grades":[{"grade":"string","count":number}],"locations":[{"location":"string","count":number}]},"employees":[{"employee_id":"string","name":"string","department":"string","grade":"string","role":"string","location":"string","manager":"string"}]}`,
-};
+// Dynamic dashboard schema — AI decides the structure based on query + data
+const DYNAMIC_DASHBOARD_SCHEMA = `{
+  "widget_type": "dashboard",
+  "title": "descriptive title",
+  "summary_cards": [
+    { "label": "card label", "value": "formatted value e.g. PKR 234.1M or 47 or 85%", "unit": "PKR/USD/count/%" }
+  ],
+  "primary_table": {
+    "title": "table title",
+    "columns": ["Col1", "Col2", "Col3"],
+    "rows": [["val1", "val2", "val3"]]
+  },
+  "secondary_table": null,
+  "insights": ["key insight 1", "key insight 2"]
+}`;
 
 // ALL data queries use full section retrieval for consistency.
 // Only 'conversational' skips data entirely (handled earlier).
@@ -1040,18 +1052,27 @@ export async function streamChat(req: Request, res: Response) {
     // LLM classifies the query → widget type. React renders JSON using fixed templates.
     const widgetClassification = await classifyWidgetIntent(message);
     const widgetType = widgetClassification.widget_type;
-    if (widgetType && context && WIDGET_SCHEMAS[widgetType]) {
+    if (widgetType && context) {
       try {
         sendStatus('Building dashboard...');
-        // Get data summary for accurate totals (not from chunk subset)
         const widgetSummary = await getDataSummaryFromBQ().catch(() => '');
-        const widgetPrompt = `Extract data from TMC context. Return ONLY valid JSON matching this schema:
-${WIDGET_SCHEMAS[widgetType]}
+        const pkrPerUsd = await getPKRperUSD().catch(() => 278);
+        const widgetPrompt = `You are a data analyst for TallyMarks Consulting (TMC).
+The user asked: "${message}"
+
+Create a ${widgetType} from the TMC data below. Decide what metrics, tables and insights make sense.
+Return ONLY valid JSON matching this flexible schema:
+${DYNAMIC_DASHBOARD_SCHEMA}
+
 Rules:
-- Use Revenue Year 1 as primary revenue. Check Currency column (PKR/USD). Skip empty revenue.
-- Progress as number (75.5%→75.5). Include TOP 20 items in arrays. Use null for missing fields.
-- IMPORTANT: For summary totals (total_employees, total_deals, total_projects etc.), use the EXACT counts from DATA SUMMARY below — NOT from counting rows in the context (context is a subset).
-- For detail rows (top_deals, projects, employees arrays), extract from CONTEXT below.
+- summary_cards: 3-6 cards max. Format values nicely: "PKR 234.1M", "$1.25M", "47", "85.3%"
+- primary_table: always include, max 20 rows. Choose the most relevant columns (5-7 max).
+- secondary_table: only if genuinely useful (e.g. breakdown by category). Null if not needed.
+- insights: 2-3 bullets highlighting key findings, anomalies, or recommendations.
+- Currency conversion: 1 USD = ${pkrPerUsd} PKR (live rate). Show both currencies where relevant.
+- For summary totals, use EXACT counts from DATA SUMMARY below (not from context rows which are a subset).
+- Progress values: format as percentage string "85.3%"
+- Dates: keep original format from data
 
 ${widgetSummary}
 CONTEXT:
