@@ -1,5 +1,8 @@
 import cron from 'node-cron';
 import prisma from '../db/prisma';
+import createLogger from '../utils/logger';
+
+const log = createLogger('scheduler');
 import { sendEmail } from './emailService';
 import { getCachedSections, getDataLastUpdated } from './indexCacheService';
 import { searchIndex } from './searchService';
@@ -34,7 +37,7 @@ async function executeTask(taskId: number): Promise<void> {
 
   if (!task || !task.isActive) return;
 
-  console.log(`[Scheduler] Running task ${task.id}: "${task.title}"`);
+  log.info('Running task', { taskId: task.id, title: task.title });
 
   try {
     // Build context from current data
@@ -89,9 +92,9 @@ async function executeTask(taskId: number): Promise<void> {
       }
     }
 
-    console.log(`[Scheduler] Task ${task.id} completed, ${recipients.length} emails sent`);
+    log.info('Task completed', { taskId: task.id, emailsSent: recipients.length });
   } catch (err: any) {
-    console.error(`[Scheduler] Task ${task.id} failed:`, err.message);
+    log.error('Task failed', { taskId: task.id, error: err.message });
     await prisma.scheduledTask.update({
       where: { id: taskId },
       data: { lastRunAt: new Date(), lastError: err.message },
@@ -110,13 +113,13 @@ function scheduleTask(task: { id: number; cronExpression: string; isActive: bool
   if (!task.isActive) return;
 
   if (!cron.validate(task.cronExpression)) {
-    console.error(`[Scheduler] Invalid cron: "${task.cronExpression}" for task ${task.id}`);
+    log.error('Invalid cron expression', { cronExpression: task.cronExpression, taskId: task.id });
     return;
   }
 
   const job = cron.schedule(task.cronExpression, () => executeTask(task.id), { timezone: 'Asia/Karachi' });
   activeJobs.set(task.id, job);
-  console.log(`[Scheduler] Scheduled task ${task.id}: "${task.cronExpression}"`);
+  log.info('Scheduled task', { taskId: task.id, cronExpression: task.cronExpression });
 }
 
 /**
@@ -127,7 +130,7 @@ export async function initScheduler(): Promise<void> {
   for (const task of tasks) {
     scheduleTask(task);
   }
-  console.log(`[Scheduler] Initialized ${tasks.length} active tasks`);
+  log.info('Initialized', { activeTasks: tasks.length });
 }
 
 /**

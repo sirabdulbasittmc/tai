@@ -1,0 +1,53 @@
+// ═════════════════════════════════════════════════════════════════════════════
+// IWhatsAppProvider — Provider interface for WhatsApp integration
+//
+// Both WebjsProvider (free/dev) and MetaProvider (production) implement this.
+// Switching provider = one config change in admin panel. Zero code changes.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export interface SendMessageParams {
+  clientNumber: string;
+  to: string;
+  message: string;
+  messageType: 'text' | 'template';
+  templateName?: string;
+  templateParams?: string[];
+}
+
+export interface SendResult {
+  success: boolean;
+  messageId?: string;
+  error?: string;
+}
+
+export interface ConnectionStatus {
+  status: 'disconnected' | 'connecting' | 'connected' | 'error';
+  connectedNumber?: string;
+  error?: string;
+}
+
+export interface TestResult {
+  success: boolean;
+  connectedNumber?: string;
+  error?: string;
+}
+
+export interface IWhatsAppProvider {
+  /** Initialize the provider for a tenant (connect, start session, etc.) */
+  initialize(clientNumber: string): Promise<void>;
+
+  /** Get QR code for scanning (webjs only; Meta returns null) */
+  getQRCode(clientNumber: string): Promise<string | null>;
+
+  /** Test if the connection is alive and working */
+  testConnection(clientNumber: string): Promise<TestResult>;
+
+  /** Send a message to a phone number */
+  sendMessage(params: SendMessageParams): Promise<SendResult>;
+
+  /** Disconnect and clean up resources */
+  disconnect(clientNumber: string): Promise<void>;
+
+  /** Get current connection status */
+  getStatus(clientNumber: string): Promise<ConnectionStatus>;
+}

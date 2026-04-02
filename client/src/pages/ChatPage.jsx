@@ -14,6 +14,7 @@ export default function ChatPage() {
     clarification, sendWithClarification, dismissClarification,
     conversationId, conversations,
     loadConversations, loadConversation, archiveConversation,
+    sources, setSources,
   } = useChat();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -61,6 +62,8 @@ export default function ChatPage() {
           isFrozen={welcomeLoading}
           selectedProvider={selectedProvider}
           onProviderChange={setSelectedProvider}
+          sources={sources}
+          onSourcesChange={setSources}
         />
       </main>
       <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />

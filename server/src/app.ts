@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Router } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { env } from './config/env';
@@ -19,15 +19,43 @@ import integrationRoutes from './routes/integrationRoutes';
 import logRoutes from './routes/logRoutes';
 import tierRoutes from './routes/tierRoutes';
 import tokenUsageRoutes from './routes/tokenUsageRoutes';
+import analyticsRoutes from './routes/analyticsRoutes';
+import personalDriveRoutes from './routes/personalDriveRoutes';
+import fileUploadRoutes from './routes/fileUploadRoutes';
+import knowledgeBaseRoutes from './routes/knowledgeBaseRoutes';
+import agentRoutes from './routes/agentRoutes';
+import { developerRouter, externalApiRouter } from './routes/apiGatewayRoutes';
+import webhookRoutes from './routes/webhookRoutes';
+import whatsappAdminRoutes from './routes/admin/whatsappAdminRoutes';
+import { requestIdMiddleware } from './middleware/requestId';
+import { requestLoggerMiddleware } from './middleware/requestLogger';
 
 const app = express();
+
+// Request ID — must be first middleware so all downstream logs include it
+app.use(requestIdMiddleware);
+
+// Production monitoring — log every request with timing & user info
+app.use(requestLoggerMiddleware);
 
 // Security headers
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('X-XSS-Protection', '0'); // Disabled — CSP is the modern replacement
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "frame-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+  ].join('; '));
   next();
 });
 
@@ -42,23 +70,47 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Routes
-app.use('/api/health', healthRoutes);
-app.use('/api/user', userAuthRoutes);
-app.use('/api/profile', profileRoutes);
-app.use('/api/conversations', conversationRoutes);
-app.use('/api/schedules', schedulerRoutes);
-app.use('/api/licenses', licenseRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/config', configRoutes);
-app.use('/api/tenants', tenantRoutes);
-app.use('/api/auth', authRoutes);
-app.use('/api/integration', integrationRoutes);
-app.use('/api/logs', logRoutes);
-app.use('/api/tiers', tierRoutes);
-app.use('/api/usage', tokenUsageRoutes);
-app.use('/api/index', indexRoutes);
-app.use('/api/chat', chatRoutes);
+// ── API v1 Router ──────────────────────────────────────────────────────
+const v1 = Router();
+
+// Add version header to all v1 responses
+v1.use((_req, res, next) => {
+  res.setHeader('X-API-Version', 'v1');
+  next();
+});
+
+v1.use('/health', healthRoutes);
+v1.use('/user', userAuthRoutes);
+v1.use('/profile', profileRoutes);
+v1.use('/conversations', conversationRoutes);
+v1.use('/schedules', schedulerRoutes);
+v1.use('/licenses', licenseRoutes);
+v1.use('/admin', adminRoutes);
+v1.use('/config', configRoutes);
+v1.use('/tenants', tenantRoutes);
+v1.use('/auth', authRoutes);
+v1.use('/integration', integrationRoutes);
+v1.use('/logs', logRoutes);
+v1.use('/tiers', tierRoutes);
+v1.use('/usage', tokenUsageRoutes);
+v1.use('/analytics', analyticsRoutes);
+v1.use('/personal-drive', personalDriveRoutes);
+v1.use('/uploads', fileUploadRoutes);
+v1.use('/knowledge', knowledgeBaseRoutes);
+v1.use('/agents', agentRoutes);
+v1.use('/admin/whatsapp', whatsappAdminRoutes);
+v1.use('/developer', developerRouter);
+v1.use('/index', indexRoutes);
+v1.use('/chat', chatRoutes);
+
+// Mount versioned API
+app.use('/api/v1', v1);
+// Backward compatibility — existing /api/ paths keep working
+app.use('/api', v1);
+// External API — X-API-Key auth, separate prefix for clarity
+app.use('/api/external/v1', externalApiRouter);
+// WhatsApp webhooks — public (verified by signature, not session auth)
+app.use('/api/v1', webhookRoutes);
 
 // Error handler
 app.use(errorHandler);

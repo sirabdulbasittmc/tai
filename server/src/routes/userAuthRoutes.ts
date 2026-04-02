@@ -1,6 +1,10 @@
 import { Router, Request, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { login, logout, changePassword, createUser, resetPassword, validatePasswordComplexity } from '../services/authService';
+import { evictDEKCache } from '../services/envelopeEncryptionService';
 import { requireAuth, requireAdmin, TOKEN_COOKIE } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { loginSchema, changePasswordSchema, createUserSchema, setupPasswordSchema, forgotPasswordSchema } from '../schemas/auth';
 import { validateSeatAvailability } from '../services/licenseService';
 import { isValidUserType } from '../config/userTypes';
 import { getConfig } from '../services/configService';
@@ -9,16 +13,28 @@ import prisma from '../db/prisma';
 
 const router = Router();
 
+// Rate limiting for auth endpoints (brute-force protection)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 attempts per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
+});
+
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many password reset requests. Please try again later.' },
+});
+
 // ─── Login (email/empcode + password) ──────────────────────────
 
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', authLimiter, validate(loginSchema), async (req: Request, res: Response) => {
   const { email, empcode, password } = req.body;
   const identifier = email || empcode;
-
-  if (!identifier || !password) {
-    res.status(400).json({ error: 'email (or empcode) and password are required' });
-    return;
-  }
 
   const result = await login(identifier, password, {
     userAgent: req.headers['user-agent'] as string,
@@ -45,6 +61,8 @@ router.post('/login', async (req: Request, res: Response) => {
 router.post('/logout', requireAuth, async (req: Request, res: Response) => {
   const token = req.cookies?.[TOKEN_COOKIE];
   if (token) await logout(token);
+  // Evict DEK from session cache — personal data no longer accessible
+  if (req.user?.id) evictDEKCache(req.user.id);
   res.clearCookie(TOKEN_COOKIE);
   res.json({ success: true });
 });
@@ -57,12 +75,8 @@ router.get('/me', requireAuth, (req: Request, res: Response) => {
 
 // ─── Change Password ───────────────────────────────────────────
 
-router.post('/change-password', requireAuth, async (req: Request, res: Response) => {
+router.post('/change-password', requireAuth, validate(changePasswordSchema), async (req: Request, res: Response) => {
   const { currentPassword, newPassword } = req.body;
-  if (!currentPassword || !newPassword) {
-    res.status(400).json({ error: 'currentPassword and newPassword are required' });
-    return;
-  }
   const result = await changePassword(req.user!.id, currentPassword, newPassword);
   if (!result.success) { res.status(400).json({ error: result.error }); return; }
   res.json({ success: true });
@@ -70,13 +84,8 @@ router.post('/change-password', requireAuth, async (req: Request, res: Response)
 
 // ─── Admin: Create User ────────────────────────────────────────
 
-router.post('/users', requireAuth, requireAdmin, async (req: Request, res: Response) => {
+router.post('/users', requireAuth, requireAdmin, validate(createUserSchema), async (req: Request, res: Response) => {
   const { empcode, name, email, password, userType, department, clientNumber: reqClientNumber } = req.body;
-  if (!empcode || !name || !email || !password || !userType) {
-    res.status(400).json({ error: 'empcode, name, email, password, and userType are required' });
-    return;
-  }
-  if (!isValidUserType(userType)) { res.status(400).json({ error: 'Invalid userType. Must be: SA, AD, ST, or BS' }); return; }
 
   // Validate password complexity from system_config
   const targetClient = req.user!.isSuperAdmin && reqClientNumber ? reqClientNumber : req.user!.clientNumber;
@@ -148,9 +157,8 @@ router.get('/password-rules/:token', async (req: Request, res: Response) => {
 
 // ─── Public: Forgot Password ───────────────────────────────────
 
-router.post('/forgot-password', async (req: Request, res: Response) => {
+router.post('/forgot-password', forgotPasswordLimiter, validate(forgotPasswordSchema), async (req: Request, res: Response) => {
   const { email, baseUrl } = req.body;
-  if (!email) { res.status(400).json({ error: 'email is required' }); return; }
   const clientUrl = baseUrl || `${req.protocol}://${req.get('host')}`.replace(':4002', ':5174');
   await sendPasswordReset(email, clientUrl);
   // Always return success to not reveal whether email exists
@@ -166,9 +174,8 @@ router.get('/invite/:token', async (req: Request, res: Response) => {
 
 // ─── Public: Set Password via Invite Token ─────────────────────
 
-router.post('/setup-password', async (req: Request, res: Response) => {
+router.post('/setup-password', validate(setupPasswordSchema), async (req: Request, res: Response) => {
   const { token, password } = req.body;
-  if (!token || !password) { res.status(400).json({ error: 'token and password are required' }); return; }
   const result = await setupPassword(token, password);
   if (!result.success) { res.status(400).json({ error: result.error }); return; }
   res.json({ success: true, message: 'Password set successfully. You can now login.' });

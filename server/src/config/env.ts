@@ -37,6 +37,7 @@ export function validateEnv(): void {
 export const env = {
   get port() { return parseInt(process.env.PORT || '4002', 10); },
   get clientUrl() { return process.env.CLIENT_URL || 'http://localhost:5174'; },
+  get baseUrl() { return process.env.BASE_URL || 'https://tai.tmcltd.com'; },
   get nodeEnv() { return process.env.NODE_ENV || 'development'; },
 
   get googleClientId() { return process.env.GOOGLE_CLIENT_ID || ''; },

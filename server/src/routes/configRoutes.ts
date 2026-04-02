@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { requireAuth, requireAdmin, requireSuperAdmin } from '../middleware/auth';
 import { setConfig, deleteConfig } from '../services/configService';
 import { getTableInfo, getTenants, previewPurge, executePurge } from '../services/dataManagementService';
@@ -7,6 +8,16 @@ import prisma from '../db/prisma';
 const router = Router();
 router.use(requireAuth);
 router.use(requireAdmin);
+
+const adminLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: any) => req.user?.id?.toString() || ipKeyGenerator(req),
+  message: { error: 'Too many requests. Please try again in 1 minute.' },
+});
+router.use(adminLimiter);
 
 const SENSITIVE_KEYS = [
   'gemini_api_key', 'anthropic_api_key', 'openai_api_key',

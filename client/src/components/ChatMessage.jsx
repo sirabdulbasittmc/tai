@@ -1,9 +1,7 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
-
-const DashboardWidget = lazy(() => import('./widgets/DashboardWidget'));
 
 const PROVIDER_LABELS = {
   gemini: 'Deep',
@@ -59,9 +57,13 @@ export default function ChatMessage({ message, isLastAssistant, isStreaming, onF
           </div>
           <MarkdownRenderer content={message.content} isStreaming={showCursor} onFollowUp={onFollowUp} onOpenArtifact={onOpenArtifact} />
           {message.widgetData && (
-            <Suspense fallback={<div style={{padding:12,color:'#888'}}>Loading dashboard...</div>}>
-              <DashboardWidget data={message.widgetData} />
-            </Suspense>
+            <button
+              className="open-dashboard-btn"
+              onClick={() => onOpenArtifact?.('dashboard', null, message.widgetData?.title || 'Dashboard', message.widgetData)}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+              {message.widgetData?.title || 'Open Dashboard'}
+            </button>
           )}
           {message.meta && (
             <div className="msg-meta-row">

@@ -1,6 +1,9 @@
 import prisma from '../db/prisma';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getGenAI } from './genaiClient';
 import { env } from '../config/env';
+import createLogger from '../utils/logger';
+
+const log = createLogger('memory');
 
 /**
  * MemoryService — Single comprehensive row per user, 3 categories.
@@ -123,38 +126,45 @@ export async function updateMemoryFromMessage(
   clientNumber: string,
   userMessage: string
 ): Promise<void> {
-  // Skip trivial messages
+  // Skip trivial messages and data queries — these are NOT personal revelations
   if (userMessage.length < 10) return;
-  if (/^(show|list|give|provide|how many|what is the|where is)\b/i.test(userMessage.trim())) return;
+  const trimmed = userMessage.trim();
+  if (/^(show|list|give|provide|how many|what is the|where is|which|compare|who is|who are|what are|tell me about|export|download|search)\b/i.test(trimmed)) return;
+  // Skip common business data patterns
+  if (/\b(dashboard|project|employee|revenue|sales|deal|client|account|pipeline|okr|org chart|competenc|risk|schedule|status|report|breakdown|distribution|overview|summary)\b/i.test(trimmed) &&
+      !/\b(I am|I'm|my |I feel|I prefer|I like|I want|I need|remember|worried|concerned|call me|name is)\b/i.test(trimmed)) return;
 
   try {
     const current = await getProfileMemory(userId);
 
-    const genAI = new GoogleGenerativeAI(env.geminiApiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const ai = getGenAI();
 
     const prompt = REWRITE_PROMPT +
       `\nCURRENT MEMORY:\nai_instructions: ${current.aiInstructions || '(empty)'}\nuser_personal: ${current.userPersonal || '(empty)'}\nactive_concerns: ${current.activeConcerns || '(empty)'}` +
       `\n\nNEW USER MESSAGE: "${userMessage}"`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text().trim();
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+    const text = (result.text ?? '').trim();
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return;
 
     const updated = JSON.parse(jsonMatch[0]);
 
-    // Only update fields that changed
-    const ai = updated.ai_instructions === 'UNCHANGED' ? current.aiInstructions : updated.ai_instructions;
-    const personal = updated.user_personal === 'UNCHANGED' ? current.userPersonal : updated.user_personal;
-    const concerns = updated.active_concerns === 'UNCHANGED' ? current.activeConcerns : updated.active_concerns;
+    // Only update fields that changed — also handle LLM misspellings of "UNCHANGED"
+    const isUnchanged = (val: any) => typeof val === 'string' && /^UNCH?A?N?GE?D$/i.test(val.trim());
+    const ai_inst = isUnchanged(updated.ai_instructions) ? current.aiInstructions : updated.ai_instructions;
+    const personal = isUnchanged(updated.user_personal) ? current.userPersonal : updated.user_personal;
+    const concerns = isUnchanged(updated.active_concerns) ? current.activeConcerns : updated.active_concerns;
 
     await prisma.$executeRawUnsafe(
       `INSERT INTO user_profile_memory (user_id, client_number, ai_instructions, user_personal, active_concerns, updated_at)
        VALUES ($1, $2, $3, $4, $5, NOW())
        ON CONFLICT (user_id) DO UPDATE SET ai_instructions = $3, user_personal = $4, active_concerns = $5, updated_at = NOW()`,
-      userId, clientNumber, ai || '', personal || '', concerns || ''
+      userId, clientNumber, ai_inst || '', personal || '', concerns || ''
     );
 
     // Log what changed
@@ -162,9 +172,9 @@ export async function updateMemoryFromMessage(
     if (updated.ai_instructions !== 'UNCHANGED') changes.push('ai_instructions');
     if (updated.user_personal !== 'UNCHANGED') changes.push('user_personal');
     if (updated.active_concerns !== 'UNCHANGED') changes.push('active_concerns');
-    if (changes.length > 0) console.log(`[Memory] Updated for user ${userId}: ${changes.join(', ')}`);
+    if (changes.length > 0) log.info('Updated memory', { userId, fields: changes.join(', ') });
   } catch (err: any) {
-    console.error('[Memory] Rewrite failed:', err.message);
+    log.error('Rewrite failed', { error: err.message });
   }
 }
 

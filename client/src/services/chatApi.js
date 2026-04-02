@@ -1,7 +1,8 @@
-export async function streamChat(message, provider, onChunk, onDone, onError, onMeta, onStatus, conversationId, abortSignal, onWidgetData) {
+export async function streamChat(message, provider, onChunk, onDone, onError, onMeta, onStatus, conversationId, abortSignal, onWidgetData, sources) {
   try {
     const body = { message, provider };
     if (conversationId) body.conversationId = conversationId;
+    if (sources && sources.length > 0) body.sources = sources;
 
     const response = await fetch('/api/chat/stream', {
       method: 'POST',

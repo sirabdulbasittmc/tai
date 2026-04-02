@@ -1,473 +1,531 @@
-# TMC AI Intelligence -- Database Design
+# TMC AI Intelligence — Database Design
 
-**Last Updated**: 2026-03-28
+**Last Updated**: 2026-04-02
+**Database**: `tmcai` on PostgreSQL 18
+**ORM**: Prisma 6 (prisma-client-js generator)
+**Schema**: `server/prisma/schema.prisma`
+**Total tables**: 38
+
+---
 
 ## Overview
 
-Multi-tenant PostgreSQL database with Prisma 6 ORM for unified storage: tenants, users, authentication, vector embeddings, chat history, user memory, audit logs, scheduled tasks, and system configuration. Follows the HRAPR pattern (system_config key-value store, AES-256-GCM encryption). All tables include `client_number` for tenant isolation.
+Multi-tenant PostgreSQL database for the 3-layer Enterprise Intelligence Platform:
+- **Layer 1 (Org):** `documents`, `chunks`, `knowledge_items`, `domain_knowledge`
+- **Layer 2 (Personal):** `personal_documents`, `personal_chunks` — user-scoped, admin-invisible
+- **Layer 3 (Agents):** `agents`, `agent_actions`, `agent_templates`
+- **Infrastructure:** `tenants`, `users`, `sessions`, `system_config`, `audit_log`, `api_keys`
+- **Comms:** `whatsapp_connections`, `whatsapp_messages`, `whatsapp_sessions`
+- **Marketplace:** `marketplace_connectors`, `marketplace_installations`
 
-**Database**: `tmcai` on PostgreSQL 15+
-**ORM**: Prisma 6 (prisma-client-js generator)
-**Schema**: `server/prisma/schema.prisma`
-**Embeddings**: Stored as JSON arrays (future migration to pgvector planned)
+All tables include `client_number` for tenant isolation **except** personal data tables which are scoped by `user_id` only (admin cannot query them).
 
 ---
 
 ## Entity Relationship Diagram
 
 ```
-tenants (client_number PK -- tenant registry)
+tenants (client_number PK)
     |
-    +----< system_config (composite PK: client_number + key, encrypted sensitive values)
+    +----< system_config (branding, feature flags, per-tenant settings)
     |
-    +----< roles ----< users ----< sessions (token-based auth)
-    |                    |
-    |                    +----< conversations ----< messages
-    |                    |
-    |                    +----< user_memory (AI-generated durable facts)
-    |                    |
-    |                    +----< audit_log (PII-masked query logs)
-    |                    |
-    |                    +----< scheduled_tasks (cron-based AI reports)
-    |
-    +----< documents ----< chunks (embeddings as JSON, ACL metadata)
-
-All tables include client_number for tenant isolation.
+    +----< users ─────────────────────────────────────────────┐
+    |          |                                               │
+    |          +── sessions (token auth)                      │
+    |          |                                               │
+    |          +── conversations ──< messages                 │
+    |          |                                               │
+    |          +── personal_documents ──< personal_chunks     │ (user-scoped only)
+    |          |                                               │
+    |          +── whatsapp_connections                        │
+    |          |    └── whatsapp_messages                      │
+    |          |    └── whatsapp_sessions                      │
+    |          |                                               │
+    |          +── agents ──< agent_actions                   │
+    |          |                                               │
+    |          └── audit_log, scheduled_tasks                  │
+    |                                                          │
+    +----< documents ──< chunks (org knowledge)               │
+    |                                                          │
+    +----< knowledge_items (curated KB)                        │
+    |                                                          │
+    +────────────────────────────────────────────────────────-+
+         domain_knowledge (global; region+vertical)
+         index_events (indexing queue)
+         proactive_alerts (org-scoped AI alerts)
+         api_keys ──< api_key_usage
+         marketplace_connectors ──< marketplace_installations
+         agent_templates (pre-built templates)
 ```
-
-### Relationship Summary
-
-| Parent | Child | Relationship | On Delete |
-|--------|-------|-------------|-----------|
-| tenants | system_config | One-to-Many (client_number) | -- |
-| tenants | roles | One-to-Many (client_number) | -- |
-| tenants | users | One-to-Many (client_number) | -- |
-| tenants | documents | One-to-Many (client_number) | -- |
-| roles | users | One-to-Many (role_id FK) | -- |
-| users | sessions | One-to-Many (user_id FK) | -- |
-| users | conversations | One-to-Many (user_id FK) | -- |
-| users | user_memory | One-to-Many (user_id FK) | -- |
-| users | audit_log | One-to-Many (user_id FK, nullable) | -- |
-| users | scheduled_tasks | One-to-Many (user_id FK) | -- |
-| conversations | messages | One-to-Many (conversation_id FK) | CASCADE |
-| documents | chunks | One-to-Many (document_id FK) | CASCADE |
 
 ---
 
 ## Tables
 
-### 1. tenants
+### Core Infrastructure
 
-Multi-tenant registry. Every other table references `client_number` from this table for tenant isolation.
+#### 1. tenants
+| Column | Type | Description |
+|--------|------|-------------|
+| client_number | VARCHAR(20) PK | Tenant identifier (e.g., "TMC") |
+| name | VARCHAR(100) | Display name |
+| is_active | BOOLEAN | Account status |
+| created_at / updated_at | TIMESTAMPTZ | Timestamps |
 
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| client_number | VARCHAR(20) | **PK** | Unique tenant identifier (e.g., "TMC") |
-| name | VARCHAR(100) | NOT NULL | Tenant display name |
-| is_active | BOOLEAN | DEFAULT true | Whether the tenant is active |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Creation time |
-| updated_at | TIMESTAMPTZ | DEFAULT now(), auto-update | Last modification time |
+#### 2. system_config
+Key-value store for all per-tenant settings, feature flags, and branding. Sensitive values AES-256-GCM encrypted.
 
-**Prisma model**: `Tenant` -> table `tenants`
+| Column | Type | Description |
+|--------|------|-------------|
+| client_number | VARCHAR(20) PK | Tenant |
+| key | VARCHAR(50) PK | Setting name (e.g., `ff_agents`, `branding_app_name`) |
+| value | TEXT | Plaintext or `iv:authTag:ciphertext` (base64) |
+| is_sensitive | BOOLEAN | If true, value is encrypted |
+| description | VARCHAR(255) | Human-readable label |
+| updated_at | TIMESTAMPTZ | Last change |
 
----
-
-### 2. system_config
-
-Encrypted key-value store for application settings (HRAPR pattern). Sensitive values are encrypted with AES-256-GCM. Scoped per tenant.
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| client_number | VARCHAR(20) | **Composite PK**, FK -> tenants.client_number | Tenant identifier |
-| key | VARCHAR(50) | **Composite PK** | Setting name |
-| value | TEXT | NOT NULL | Plain text or AES-256-GCM encrypted (format: `iv:authTag:ciphertext`, all base64) |
-| is_sensitive | BOOLEAN | DEFAULT false | If true, value is encrypted |
-| description | VARCHAR(255) | NULL | Human-readable description |
-| updated_at | TIMESTAMPTZ | DEFAULT now(), auto-update | Last modification time |
-
-**Prisma model**: `SystemConfig` -> table `system_config`
-**Primary key**: Composite `@@id([clientNumber, key])`
-
-**Encryption details**:
-- Algorithm: `aes-256-gcm`
-- IV: 16 bytes random per encryption
-- Auth tag: 16 bytes
-- Key: first 32 bytes of `ENCRYPTION_KEY` env var (UTF-8 encoded)
-- Stored format: `{iv_base64}:{authTag_base64}:{ciphertext_base64}`
+**Feature flags** stored here: `ff_content_safety_enabled`, `ff_agents`, `ff_whatsapp_enabled`, `feature_api_access`, `feature_marketplace`, `ff_domain_llm_traffic_pct`, etc.
+**Branding keys**: `branding_app_name`, `branding_logo_url`, `branding_primary_color`, `branding_accent_color`, `branding_custom_css`, `branding_custom_domain`, `branding_favicon_url`, `branding_remove_powered_by`
 
 ---
 
-### 3. roles
+### Users & Auth
 
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Role ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| name | VARCHAR(50) | NOT NULL | Role name |
-| allowed_sources | TEXT[] | DEFAULT '{}' | Data sources this role can access |
-| allowed_departments | TEXT[] | DEFAULT '{}' | Departments data this role can view |
-| is_admin | BOOLEAN | DEFAULT false | Full access flag |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Creation time |
+#### 3. users
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number | VARCHAR(20) | Tenant |
+| empcode | VARCHAR(20) | Employee code |
+| name | VARCHAR(100) | Full name |
+| email | VARCHAR(100) | Email (unique per tenant) |
+| password_hash | VARCHAR(255) | bcrypt (10 rounds) |
+| department | VARCHAR(50) | Department |
+| role_id | INT FK → roles.id | |
+| is_active | BOOLEAN | Account status |
+| last_login_at | TIMESTAMPTZ | |
+| failed_attempts | INT | Consecutive login failures |
+| locked_until | TIMESTAMPTZ | Lockout expiry (after 5 failures) |
+| job_description | TEXT | HR-managed (read-only) |
+| about_me | TEXT | User-written background |
+| instructions | TEXT | Custom AI behavior rules |
+| tone_preference | VARCHAR(30) | friendly/formal/executive/casual/technical |
+| **encrypted_dek** | TEXT | **Phase 4:** AES-256-GCM encrypted DEK (`iv:authTag:ct`, base64). Null until Phase 4 DEK generation |
+| **personal_drive_folder_id** | VARCHAR(255) | **Phase 3:** User's GDrive folder ID for personal sync |
+| **personal_drive_last_sync** | TIMESTAMPTZ | **Phase 3:** Last personal GDrive sync time |
+| created_at / updated_at | TIMESTAMPTZ | |
 
-**Prisma model**: `Role` -> table `roles`
-**Unique constraint**: `@@unique([clientNumber, name])` -- role names unique per tenant
+**Envelope Encryption (Phase 4):**
+- MEK (Master Encryption Key): stored in GCP Secret Manager, never in env vars
+- DEK (Data Encryption Key): per-user 256-bit random, encrypted by MEK, stored in `encrypted_dek`
+- Password reset is safe: DEK is MEK-encrypted, independent of password
+- Admin cannot access personal data: DEK only in session memory during active session
 
-**Seed data**:
-
-| name | allowed_sources | allowed_departments | is_admin |
-|------|----------------|---------------------|----------|
-| admin | ['all'] | ['all'] | true |
-| management | ['all'] | ['all'] | false |
-| hr | ['google_drive'] | ['HR', 'Management'] | false |
-| sales | ['google_drive'] | ['Sales', 'Pre-Sales'] | false |
-| delivery | ['google_drive'] | ['Delivery', 'Projects'] | false |
-| viewer | ['google_drive'] | [] | false |
-
----
-
-### 4. users
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | User ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| empcode | VARCHAR(20) | NOT NULL | Employee code (links to TMC HR data) |
-| name | VARCHAR(100) | NOT NULL | Full name |
-| email | VARCHAR(100) | NOT NULL | Email address |
-| password_hash | VARCHAR(255) | NOT NULL | bcrypt hashed password (10 rounds) |
-| department | VARCHAR(50) | NULL | Department name |
-| role_id | INT | FK -> roles.id, NOT NULL | User's role |
-| is_active | BOOLEAN | DEFAULT true | Account status |
-| last_login_at | TIMESTAMPTZ | NULL | Last successful login |
-| failed_attempts | INT | DEFAULT 0 | Consecutive failed login attempts |
-| locked_until | TIMESTAMPTZ | NULL | Account lockout expiry (set after 5 failures) |
-| job_description | TEXT | NULL | Synced from HR (read-only for user) |
-| about_me | TEXT | NULL | User-written personality/background |
-| instructions | TEXT | NULL | Custom AI behavior rules |
-| tone_preference | VARCHAR(30) | NULL | friendly, formal, executive, casual, technical |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Creation time |
-| updated_at | TIMESTAMPTZ | DEFAULT now(), auto-update | Last modification time |
-
-**Prisma model**: `User` -> table `users`
-
-**Unique constraints**: `@@unique([clientNumber, empcode])`, `@@unique([clientNumber, email])` -- empcode and email unique per tenant
-
-**Profile fields**:
-- `job_description`: HR-managed, read-only for users, synced from centralized HR data
-- `about_me`: User-editable personality/background
-- `instructions`: User-editable custom AI instructions
-- `tone_preference`: User-selectable from predefined options
+#### 4. sessions
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| token | VARCHAR(255) UNIQUE | 64-char hex (crypto.randomBytes(32)) |
+| user_id | INT FK → users.id | |
+| expires_at | TIMESTAMPTZ | 72h from creation |
+| is_revoked | BOOLEAN | Set on logout |
+| user_agent / ip_address | VARCHAR | Browser/IP for audit |
 
 ---
 
-### 5. sessions
+### Organizational Knowledge
 
-Token-based session management. Replaces the HRAPR login_config/access_tokens pattern with a simpler model.
+#### 5. documents
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number | VARCHAR(20) | Tenant |
+| source | VARCHAR(50) | Connector (google_drive, bigquery, upload) |
+| source_id | VARCHAR(255) | External ID |
+| title | VARCHAR(255) | Document title |
+| department | VARCHAR(50) | ACL: which department owns this |
+| sync_status | VARCHAR(20) | pending/indexed/failed/stale/archived |
+| content_hash | VARCHAR(64) | SHA-256 for change detection |
+| last_modified_at / last_checked_at | TIMESTAMPTZ | Sync timestamps |
 
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Session ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| token | VARCHAR(255) | UNIQUE, NOT NULL | 64-char hex session token |
-| user_id | INT | FK -> users.id, NOT NULL | Session owner |
-| expires_at | TIMESTAMPTZ | NOT NULL | Token expiration (72 hours from creation) |
-| is_revoked | BOOLEAN | DEFAULT false | Set to true on logout |
-| user_agent | VARCHAR(500) | NULL | Browser/client user agent string |
-| ip_address | VARCHAR(50) | NULL | Client IP address |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Session creation time |
+#### 6. chunks
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number | VARCHAR(20) | Tenant |
+| document_id | INT FK → documents.id CASCADE | |
+| content | TEXT | Chunk text |
+| embedding | JSON | 3072-dim vector (Gemini embedding-001) |
+| chunk_index | INT | Position in document |
+| header_path | TEXT[] | Hierarchical headers |
+| content_hash | VARCHAR(64) UNIQUE | SHA-256 |
+| department | VARCHAR(50) | ACL: inherits from document |
+| source | VARCHAR(50) | Connector name |
+| metadata | JSONB | Extensible metadata |
 
-**Prisma model**: `Session` -> table `sessions`
+#### 7. knowledge_items (Phase 5)
+Curated knowledge base entries. Semantic search via in-memory cosine.
 
-**Token generation**: `crypto.randomBytes(32).toString('hex')` = 64-char hex string
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number | VARCHAR(20) | Tenant |
+| category | VARCHAR(50) | Item category |
+| title | VARCHAR(255) | Title |
+| content | TEXT | Full content |
+| tags | TEXT[] | Searchable tags |
+| embedding | JSONB | Embedding vector |
+| source / source_id | VARCHAR | Origin reference |
+| created_by | INT FK → users.id | Author |
 
----
+#### 8. domain_knowledge (Phase 6)
+Global domain expert knowledge base. Hierarchical (parent_id self-reference). Searchable via recursive CTE.
 
-### 6. documents
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| region | VARCHAR(20) | pk / ae / sa / qa / global |
+| vertical | VARCHAR(30) | general / manufacturing / petroleum / finance / public |
+| category | VARCHAR(30) | regulatory / compliance / tax / labour / corporate |
+| title | VARCHAR(255) | |
+| content | TEXT | |
+| parent_id | INT FK → domain_knowledge.id | Hierarchy |
+| tags | TEXT[] | |
+| source / source_ref | VARCHAR | e.g., "FBR", "SECP" |
+| embedding | JSONB | |
 
-Data source lifecycle tracking. Each row represents a document fetched from an external source.
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Document ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| source | VARCHAR(50) | NOT NULL | Connector name (google_drive, bigquery, etc.) |
-| source_id | VARCHAR(255) | NULL | External ID (Drive file ID, BQ table name) |
-| title | VARCHAR(255) | NOT NULL | Document/section title |
-| version | VARCHAR(50) | NULL | Source document version |
-| department | VARCHAR(50) | NULL | ACL: which department owns this data |
-| last_checked_at | TIMESTAMPTZ | NULL | Last sync check time |
-| last_modified_at | TIMESTAMPTZ | NULL | Source file modification time |
-| sync_status | VARCHAR(20) | DEFAULT 'pending' | Status: pending, indexed, failed, stale, archived |
-| content_hash | VARCHAR(64) | NULL | SHA-256 hash of full document content |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Creation time |
-| archived_at | TIMESTAMPTZ | NULL | Soft delete timestamp |
-
-**Prisma model**: `Document` -> table `documents`
-
----
-
-### 7. chunks
-
-Embeddings and chunked content. Currently stores embeddings as JSON arrays; future migration to pgvector planned.
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Chunk ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| document_id | INT | FK -> documents.id ON DELETE CASCADE | Parent document |
-| content | TEXT | NOT NULL | Chunk text content |
-| embedding | JSON | DEFAULT '[]' | 3072-dimensional embedding vector (Gemini embedding-001) |
-| chunk_index | INT | NOT NULL | Position within document |
-| header_path | TEXT[] | DEFAULT '{}' | Hierarchical headers for this chunk |
-| content_hash | VARCHAR(64) | UNIQUE, NOT NULL | SHA-256 hash for change detection |
-| department | VARCHAR(50) | NULL | ACL: inherits from parent document |
-| source | VARCHAR(50) | NOT NULL | Connector name |
-| metadata | JSONB | DEFAULT '{}' | Extensible metadata (key-value) |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Creation time |
-
-**Prisma model**: `Chunk` -> table `chunks`
-
-**Indexes**:
-- `@@index([documentId])` -- fast lookup by parent document
-- `@@index([contentHash])` -- fast deduplication checks
-- `@@index([department])` -- fast ACL filtering
-
-**Note**: The `embedding` column is currently `Json` type. When pgvector is installed, this will migrate to `vector(3072)` with an IVFFlat index for efficient similarity search.
+**Pre-seeded:** FBR Tax (PK), SECP Corporate (PK), UAE Corporate Tax, UAE Labour Law, KSA Vision 2030, Qatar Business Environment
 
 ---
 
-### 8. conversations
+### Personal Intelligence (Phase 3–4)
 
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Conversation ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| user_id | INT | FK -> users.id, NOT NULL | Conversation owner |
-| title | VARCHAR(255) | NULL | Auto-generated from first message, or user-set |
-| provider | VARCHAR(20) | NULL | Last used AI provider |
-| message_count | INT | DEFAULT 0 | Total messages in conversation |
-| is_archived | BOOLEAN | DEFAULT false | Soft archive flag |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Creation time |
-| updated_at | TIMESTAMPTZ | DEFAULT now(), auto-update | Last activity time |
+> **Security:** All personal tables are scoped by `user_id` only. No `client_number` column. Admin queries NEVER touch these tables. Audit log records `[PERSONAL_DATA_USED: true]` but never the content.
 
-**Prisma model**: `Conversation` -> table `conversations`
+#### 9. personal_documents
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| user_id | INT FK → users.id CASCADE | Owner |
+| source | VARCHAR(20) | 'gdrive' or 'upload' |
+| external_id | VARCHAR(255) | GDrive file ID (null for uploads) |
+| folder_id | VARCHAR(255) | GDrive folder ID |
+| file_name | VARCHAR(255) | |
+| mime_type | VARCHAR(100) | |
+| size_bytes | INT | |
+| content_hash | VARCHAR(64) | SHA-256 for dedup |
+| storage_path | VARCHAR(500) | GCS path (uploads only) |
+| parse_status | VARCHAR(20) | pending/processing/done/error |
+| parse_error | TEXT | |
 
----
-
-### 9. messages
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Message ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| conversation_id | INT | FK -> conversations.id ON DELETE CASCADE | Parent conversation |
-| role | VARCHAR(10) | NOT NULL | 'user' or 'assistant' |
-| content | TEXT | NOT NULL | Message text (may contain markdown, HTML widgets) |
-| provider | VARCHAR(20) | NULL | AI provider used (assistant messages only) |
-| input_tokens | INT | NULL | Estimated input token count |
-| output_tokens | INT | NULL | Estimated output token count |
-| response_time_ms | INT | NULL | LLM response time in milliseconds |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Message timestamp |
-
-**Prisma model**: `Message` -> table `messages`
+#### 10. personal_chunks
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| user_id | INT | Owner |
+| document_id | INT FK → personal_documents.id CASCADE | |
+| content | TEXT | Chunk text |
+| embedding | JSONB | Embedding vector |
+| chunk_index | INT | |
+| content_hash | VARCHAR(64) | |
 
 ---
 
-### 10. user_memory
+### Organizational Intelligence (Phase 5)
 
-AI-extracted durable facts about users. Schema is ready; active extraction service is pending (Phase 3).
+#### 11. index_events
+DB-backed event queue for incremental re-indexing. Processor polls every 10s with `FOR UPDATE SKIP LOCKED`.
 
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Memory ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| user_id | INT | FK -> users.id, NOT NULL | Memory owner |
-| memory_type | VARCHAR(20) | NOT NULL | Type: 'profile', 'preference', 'insight' |
-| summary | TEXT | NOT NULL | AI-extracted durable fact text |
-| embedding | JSON | NULL, DEFAULT '[]' | Embedding for relevance-based retrieval |
-| confidence | FLOAT | DEFAULT 1.0 | How confident we are this fact is still valid |
-| source_conversation_id | INT | NULL | Conversation where this was learned |
-| is_active | BOOLEAN | DEFAULT true | Can be deactivated by user |
-| created_at | TIMESTAMPTZ | DEFAULT now() | When fact was extracted |
-| updated_at | TIMESTAMPTZ | DEFAULT now(), auto-update | When fact was last updated |
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number | VARCHAR(20) | Tenant |
+| event_type | VARCHAR(50) | document_added, document_modified, etc. |
+| source / source_id | VARCHAR | Origin |
+| status | VARCHAR(20) | pending/processing/done/failed |
+| priority | INT | 1=high, 5=normal, 10=low |
+| payload | JSONB | Event data |
+| error | TEXT | |
+| created_at / processed_at | TIMESTAMPTZ | |
 
-**Prisma model**: `UserMemory` -> table `user_memory`
+#### 12. proactive_alerts
+AI-generated anomaly and insight notifications. Deduplicated per `alert_type + client_number` within 24h.
 
----
-
-### 11. audit_log
-
-PII-masked query logging for compliance, analytics, and debugging.
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Log entry ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| user_id | INT | FK -> users.id, NULL | Who made the request (NULL for anonymous) |
-| masked_query | TEXT | NOT NULL | PII-masked version of user query |
-| provider | VARCHAR(20) | NOT NULL | AI provider used |
-| chunks_retrieved | INT | DEFAULT 0 | Number of data chunks sent to AI |
-| top_score | FLOAT | NULL | Best retrieval similarity score |
-| pii_entities_count | INT | DEFAULT 0 | Number of PII entities masked |
-| input_tokens | INT | NULL | Estimated input tokens |
-| output_tokens | INT | NULL | Estimated output tokens |
-| response_time_ms | INT | NOT NULL | Total response time in milliseconds |
-| intent_type | VARCHAR(30) | NULL | Classified intent type |
-| error | TEXT | NULL | Error message if the request failed |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Log timestamp |
-
-**Prisma model**: `AuditLog` -> table `audit_log`
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number | VARCHAR(20) | Tenant |
+| alert_type | VARCHAR(50) | anomaly_high_cost, daily_insights, etc. |
+| title | VARCHAR(255) | |
+| content | TEXT | Alert body |
+| severity | VARCHAR(20) | info/warning/critical |
+| is_read | BOOLEAN | User acknowledged |
+| expires_at | TIMESTAMPTZ | Auto-expire old alerts |
 
 ---
 
-### 12. scheduled_tasks
+### Conversations
 
-Cron-based AI report generation with email notifications.
+#### 13. conversations
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number / user_id | | |
+| title | VARCHAR(255) | Auto-generated from first message |
+| provider | VARCHAR(20) | Last AI provider used |
+| is_archived | BOOLEAN | |
 
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| id | SERIAL | **PK**, auto-increment | Task ID |
-| client_number | VARCHAR(20) | FK -> tenants.client_number, NOT NULL | Tenant identifier |
-| user_id | INT | FK -> users.id, NOT NULL | Task owner |
-| title | VARCHAR(200) | NOT NULL | Task display name |
-| prompt | TEXT | NOT NULL | AI prompt to execute |
-| cron_expression | VARCHAR(50) | NOT NULL | node-cron compatible cron expression |
-| provider | VARCHAR(20) | DEFAULT 'gemini-flash' | AI provider for execution |
-| notify_email | VARCHAR(255) | NULL | Comma-separated recipient emails |
-| notify_self | BOOLEAN | DEFAULT true | Also email the task owner |
-| is_active | BOOLEAN | DEFAULT true | Whether the cron job is active |
-| last_run_at | TIMESTAMPTZ | NULL | Last execution time |
-| last_result | TEXT | NULL | Last successful AI response (truncated to 10K chars) |
-| last_error | TEXT | NULL | Last error message |
-| next_run_at | TIMESTAMPTZ | NULL | Estimated next execution time |
-| created_at | TIMESTAMPTZ | DEFAULT now() | Creation time |
-| updated_at | TIMESTAMPTZ | DEFAULT now(), auto-update | Last modification time |
-
-**Prisma model**: `ScheduledTask` -> table `scheduled_tasks`
+#### 14. messages
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| conversation_id | INT FK CASCADE | |
+| role | VARCHAR(10) | 'user' or 'assistant' |
+| content | TEXT | Markdown + HTML widgets |
+| provider | VARCHAR(20) | AI provider (assistant only) |
+| input_tokens / output_tokens | INT | Token counts |
+| response_time_ms | INT | |
 
 ---
 
-## Seed Data
+### Agent Framework (Phase 8–8.5)
 
-The seed script (`server/prisma/seed.ts`) creates:
+#### 15. agents
+Personal AI agents with persistent memory, scheduling, and circuit breaker.
 
-### 0. Tenant
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number | VARCHAR(20) | Tenant |
+| user_id | INT | Owner |
+| name | VARCHAR(100) | |
+| instructions | TEXT | Agent prompt/goal |
+| data_sources | TEXT[] | org / personal / uploads |
+| schedule | VARCHAR(50) | cron expression or null (manual) |
+| actions | TEXT[] | Allowed action types |
+| notify_email / notify_whatsapp | BOOLEAN | Notification channels |
+| is_active | BOOLEAN | |
+| last_run_at / last_result / last_error | | Last execution info |
+| next_run_at | TIMESTAMPTZ | Scheduled next run |
+| memory_context | JSONB | Persistent memory (10KB cap) |
+| run_count / error_count | INT | Stats; circuit opens at errorCount ≥ 3 |
 
-| Field | Value |
-|-------|-------|
-| client_number | TMC |
-| name | TallyMarks Consulting |
-| is_active | true |
+**Limits:** Max 3 agents/user (Standard tier), 2 concurrent/user, 10 concurrent/tenant.
 
-All seed data below is scoped to tenant "TMC".
+#### 16. agent_actions
+Human-in-the-loop approval log for destructive agent actions.
 
-### 1. Roles (6 roles, scoped to TMC)
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number / user_id | | |
+| action_type | VARCHAR(50) | send_email, create_event, update_project |
+| status | VARCHAR(20) | pending/approved/rejected/executing/done/failed |
+| input / output | JSONB | Action parameters and result |
+| requires_approval | BOOLEAN | Always true for send_email, create_event, update_project |
+| approved_by / approved_at | | Approval audit |
 
-| Role | Sources | Departments | Admin |
-|------|---------|-------------|-------|
-| admin | all | all | Yes |
-| management | all | all | No |
-| hr | google_drive | HR, Management | No |
-| sales | google_drive | Sales, Pre-Sales | No |
-| delivery | google_drive | Delivery, Projects | No |
-| viewer | google_drive | (none) | No |
+#### 17. agent_templates
+Pre-built agent templates available to all tenants from the marketplace.
 
-### 2. Admin User (scoped to TMC)
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| slug | VARCHAR(100) UNIQUE | e.g., `morning-brief` |
+| name / description | VARCHAR | |
+| instructions | TEXT | Default prompt |
+| data_sources / actions | TEXT[] | Defaults |
+| category | VARCHAR(50) | projects/productivity/sales/finance/strategy |
+| is_published | BOOLEAN | |
 
-| Field | Value |
-|-------|-------|
-| client_number | TMC |
-| empcode | ADMIN |
-| name | System Administrator |
-| email | admin@tmc.com |
-| password | admin123 (bcrypt hashed) |
-| department | IT |
-| role | admin |
+**Pre-seeded:** Project Risk Monitor, Morning Brief, Opportunity Scout, Invoice Reminder, Competitive Intelligence
 
-### 3. System Config (6 entries, scoped to TMC)
+---
 
-| Key | Value | Sensitive |
-|-----|-------|-----------|
-| app_name | TMC AI Intelligence | No |
-| rag_enabled | true | No |
-| pii_enabled | true | No |
-| rag_top_k | 7 | No |
-| max_tokens | 8192 | No |
-| session_hours | 72 | No |
+### WhatsApp (Phase 8.5)
 
-### Running the Seed
+#### 18. whatsapp_connections
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| user_id | INT UNIQUE FK → users.id CASCADE | One connection per user |
+| phone_number | VARCHAR(30) | |
+| wa_id | VARCHAR(50) | Meta's WhatsApp user ID |
+| status | VARCHAR(20) | active/disconnected |
+| provider | VARCHAR(20) | 'meta' |
+| connected_at / updated_at | TIMESTAMPTZ | |
+
+**Daily limits:** 100/connection, 20/agent, 200/user.
+
+#### 19. whatsapp_messages
+Immutable audit log of all WhatsApp messages.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| user_id | INT | |
+| direction | VARCHAR(10) | 'in' or 'out' |
+| content | TEXT | Message body |
+| message_id | VARCHAR(100) | Meta's message ID |
+| status | VARCHAR(20) | sent/delivered/read/failed/received |
+| agent_id | INT | Which agent sent it (nullable) |
+| session_id | INT | Conversation session (nullable) |
+
+#### 20. whatsapp_sessions
+Multi-turn conversation context. Auto-closes after 24h inactivity.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| user_id | INT | |
+| conversation_history | JSONB | Array of `{role, content, ts}` |
+| agent_id | INT | Active agent (nullable) |
+| last_message_at | TIMESTAMPTZ | Session timeout reference |
+| closed_at | TIMESTAMPTZ | NULL = active |
+
+---
+
+### Platform & Marketplace (Phase 9)
+
+#### 21. api_keys
+External API access keys for the `/api/external/v1/` gateway.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number / user_id | | |
+| label | VARCHAR(100) | Display name |
+| key_hash | VARCHAR(64) UNIQUE | SHA-256 of raw key — plaintext never stored |
+| key_prefix | VARCHAR(20) | `tmcai_XXXXXX` — shown in UI for identification |
+| rate_limit_rpm | INT | Default 100 req/min |
+| scopes | JSONB | e.g., `["query","knowledge"]` |
+| is_active | BOOLEAN | |
+| last_used_at | TIMESTAMPTZ | |
+
+#### 22. api_key_usage
+Usage log for billing and analytics.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| key_id | INT | |
+| client_number | VARCHAR(20) | |
+| endpoint / status_code / latency_ms | | Per-request metrics |
+
+#### 23. marketplace_connectors
+Third-party connector registry. 70% revenue to creator, 30% to platform.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| slug | VARCHAR(100) UNIQUE | e.g., `sap-connector` |
+| name / description / author | VARCHAR | |
+| version | VARCHAR(20) | |
+| npm_package | VARCHAR(200) | npm package name |
+| category | VARCHAR(50) | connector/template/knowledge-pack |
+| revenue_share | NUMERIC(4,2) | Platform cut (0.30 = 30%) |
+| price_usd | NUMERIC(8,2) | 0.00 = free |
+| is_published | BOOLEAN | |
+| downloads | INT | Counter |
+
+#### 24. marketplace_installations
+Tracks which tenants have installed which connectors.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number | VARCHAR(20) | Tenant |
+| connector_id | INT FK → marketplace_connectors.id | |
+| installed_by | INT | User who installed |
+| config | JSONB | Connector-specific config |
+| UNIQUE(client_number, connector_id) | | One install per tenant |
+
+---
+
+### Supporting Tables
+
+#### 25. audit_log
+PII-masked query log for compliance. Every chat request logged.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number / user_id | | |
+| masked_query | TEXT | PII removed |
+| provider | VARCHAR(20) | AI provider used |
+| chunks_retrieved / top_score | | Retrieval metrics |
+| pii_entities_count | INT | How many entities masked |
+| input_tokens / output_tokens | INT | |
+| response_time_ms | INT | |
+| intent_type | VARCHAR(30) | Classified intent |
+| error | TEXT | Non-null if request failed |
+
+#### 26. scheduled_tasks
+Cron-based AI report generation with email delivery.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | |
+| client_number / user_id | | |
+| title / prompt | | Task definition |
+| cron_expression | VARCHAR(50) | node-cron format |
+| notify_email | VARCHAR(255) | Comma-separated recipients |
+| notify_self | BOOLEAN | Also email task owner |
+| last_run_at / last_result / last_error | | Execution history |
+| next_run_at | TIMESTAMPTZ | |
+
+#### 27. token_usage / token_query_log
+Per-user token consumption tracking for billing and quota enforcement.
+
+#### 28. user_profile_memory / user_learning
+AI-extracted durable facts and learning preferences per user.
+
+#### 29. feedback
+User thumbs-up/thumbs-down on AI responses.
+
+---
+
+## Migration History
+
+| Migration | Phase | What it does |
+|-----------|-------|-------------|
+| `20260328145354_no_roles_table` | 0 | Initial schema: users, sessions, conversations, messages, audit_log, chunks, documents |
+| `20260329_add_invite_fields` | 0 | Invite token fields on users |
+| `20260401_phase3_personal_data` | 3 | `personal_documents`, `personal_chunks`; `personal_drive_folder_id/last_sync` on users |
+| `20260401_phase4_envelope_encryption` | 4 | `encrypted_dek` column on users |
+| `20260401_phase5_org_intelligence` | 5 | `index_events`, `proactive_alerts`, `knowledge_items` |
+| `20260401_phase6_domain_knowledge` | 6 | `domain_knowledge` |
+| `20260401_phase8_agents` | 8 | `agent_actions` |
+| `20260401_phase85_agents_whatsapp` | 8.5 | `agents`, `whatsapp_connections`, `whatsapp_messages`, `whatsapp_sessions` |
+| `20260401_phase9_platform` | 9 | `api_keys`, `api_key_usage`, `marketplace_connectors`, `marketplace_installations`, `agent_templates` |
+
+### Applying Migrations (development)
 
 ```bash
-cd server
-npx prisma db seed
+# Apply all manually (uses psql directly — migrations are raw SQL, not Prisma-managed)
+export PGPASSWORD='your_password'
+psql -U postgres -h 127.0.0.1 -d tmcai -f server/prisma/migrations/<dir>/migration.sql
+
+# Or apply all at once:
+cat server/prisma/migrations/20260401_phase*/migration.sql | psql -U postgres -h 127.0.0.1 -d tmcai
 ```
+
+Each migration directory contains a `rollback.sql` for instant reversal.
 
 ---
 
-## Migration Strategy
+## Security Notes
 
-### Initial Setup
-
-```bash
-# 1. Create database
-createdb tmcai
-
-# 2. Set DATABASE_URL in .env
-DATABASE_URL="postgresql://user:password@localhost:5432/tmcai"
-
-# 3. Run Prisma migration
-cd server
-npx prisma migrate dev --name init
-
-# 4. Seed data
-npx prisma db seed
-```
-
-### Future: pgvector Migration
-
-When pgvector extension is available:
-
-```sql
--- 1. Install extension
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- 2. Prisma schema change: embedding Json -> Unsupported("vector(3072)")
--- 3. Create IVFFlat index
-CREATE INDEX ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-```
-
-### Future: Row Level Security
-
-```sql
-ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
-CREATE POLICY chunks_dept_access ON chunks
-  USING (department IS NULL OR department = current_setting('app.user_department', true));
-```
+- **Tenant isolation:** Every query must include `client_number = $tenantId`
+- **Personal data isolation:** Personal tables (`personal_documents`, `personal_chunks`) use `user_id` only — never `client_number`. Admin endpoints must never query these tables.
+- **Encryption at rest:** `system_config` sensitive values + `personal_chunks.content` (Phase 4+) encrypted with per-user DEK
+- **API keys:** Raw key never stored — only SHA-256 hash. Prefix shown in UI for identification only.
+- **WhatsApp messages:** Immutable audit log; all outbound sanitized before send
 
 ---
 
-## Prisma Schema Location
+## Prisma Schema
 
 `server/prisma/schema.prisma`
 
-### Prisma Configuration
-
-```prisma
-generator client {
-  provider = "prisma-client-js"
-}
-
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-```
-
-### Column Naming Convention
-
-Prisma uses camelCase in application code, mapped to snake_case in the database via `@map()`:
-- `passwordHash` -> `password_hash`
-- `failedAttempts` -> `failed_attempts`
-- `lockedUntil` -> `locked_until`
-- `isActive` -> `is_active`
-- Table names mapped via `@@map()`: `User` -> `users`, `SystemConfig` -> `system_config`, etc.
+Column naming: Prisma camelCase → PostgreSQL snake_case via `@map()` and `@@map()`.

@@ -44,7 +44,7 @@ export default function DynamicTable({ title, columns, rows, maxHeight }) {
     <div style={s.wrap}>
       {title && <div style={s.title}>{title}</div>}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <input style={s.search} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+        <input style={s.search} placeholder="Search by name, value..." value={search} onChange={e => setSearch(e.target.value)} />
         <div style={s.filterBar}>
           {[10, 20, 'all'].map(n => (
             <button key={n} style={rowLimit === n ? s.btnActive : s.btn} onClick={() => setRowLimit(n)}>

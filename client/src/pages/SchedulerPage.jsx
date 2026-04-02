@@ -44,11 +44,13 @@ export default function SchedulerPage() {
     } catch {}
   };
 
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
   const deleteTask = async (id) => {
-    if (!confirm('Delete this scheduled task?')) return;
     try {
       await api.delete(`/schedules/${id}`);
       setMsg('Task deleted');
+      setConfirmDeleteId(null);
       loadTasks();
     } catch (err) { setMsg(err.response?.data?.error || 'Delete failed'); }
   };
@@ -148,7 +150,14 @@ export default function SchedulerPage() {
                     <button className="admin-action" onClick={() => toggleTask(task)} style={{ borderColor: task.isActive ? '#f59e0b' : '#4ade80', color: task.isActive ? '#f59e0b' : '#4ade80' }}>
                       {task.isActive ? 'Pause' : 'Resume'}
                     </button>
-                    <button className="admin-action" onClick={() => deleteTask(task.id)} style={{ borderColor: '#ef4444', color: '#ef4444' }}>Del</button>
+                    {confirmDeleteId === task.id ? (
+                      <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                        <button className="admin-action" onClick={() => deleteTask(task.id)} style={{ borderColor: '#ef4444', color: '#ef4444' }}>Yes</button>
+                        <button className="admin-action" onClick={() => setConfirmDeleteId(null)}>No</button>
+                      </span>
+                    ) : (
+                      <button className="admin-action" onClick={() => setConfirmDeleteId(task.id)} style={{ borderColor: '#ef4444', color: '#ef4444' }}>Del</button>
+                    )}
                   </div>
                 </div>
 

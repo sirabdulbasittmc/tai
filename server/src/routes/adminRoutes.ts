@@ -1,10 +1,21 @@
 import { Router, Request, Response } from 'express';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { requireAuth, requireAdmin } from '../middleware/auth';
 import prisma from '../db/prisma';
 
 const router = Router();
 router.use(requireAuth);
 router.use(requireAdmin);
+
+const adminLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: any) => req.user?.id?.toString() || ipKeyGenerator(req),
+  message: { error: 'Too many requests. Please try again in 1 minute.' },
+});
+router.use(adminLimiter);
 
 // List users in current tenant (includes integration status)
 router.get('/users', async (req: Request, res: Response) => {

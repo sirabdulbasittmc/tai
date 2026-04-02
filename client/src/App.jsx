@@ -6,6 +6,7 @@ import SettingsPage from './pages/SettingsPage';
 import AdminPage from './pages/AdminPage';
 import SetupPasswordPage from './pages/SetupPasswordPage';
 import SchedulerPage from './pages/SchedulerPage';
+import AgentsPage from './pages/AgentsPage';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -32,6 +33,7 @@ export default function App() {
       <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
       <Route path="/admin" element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
       <Route path="/schedules" element={<ProtectedRoute><SchedulerPage /></ProtectedRoute>} />
+      <Route path="/agents" element={<ProtectedRoute><AgentsPage /></ProtectedRoute>} />
       <Route path="/*" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
     </Routes>
   );

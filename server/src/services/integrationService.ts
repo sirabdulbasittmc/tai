@@ -19,6 +19,8 @@ const SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/userinfo.email',
+  // Phase 3.1: Personal GDrive folder access
+  'https://www.googleapis.com/auth/drive.readonly',
 ];
 
 // ─── OAuth Client ─────────────────────────────────────────────

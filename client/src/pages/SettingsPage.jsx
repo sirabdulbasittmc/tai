@@ -6,7 +6,7 @@ import api from '../services/api';
 export default function SettingsPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [profile, setProfile] = useState({ city: '', contactNumber: '', aboutMe: '', instructions: '' });
+  const [profile, setProfile] = useState({ city: '', contactNumber: '', aboutMe: '', instructions: '', gender: '', preferredTitle: '' });
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '' });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -14,7 +14,7 @@ export default function SettingsPage() {
   useEffect(() => {
     api.get('/profile').then(res => {
       const p = res.data.profile || {};
-      setProfile({ city: p.city || '', contactNumber: p.contactNumber || '', aboutMe: p.aboutMe || '', instructions: p.instructions || '' });
+      setProfile({ city: p.city || '', contactNumber: p.contactNumber || '', aboutMe: p.aboutMe || '', instructions: p.instructions || '', gender: p.gender || '', preferredTitle: p.preferredTitle || '' });
     }).catch(() => {});
   }, []);
 
@@ -104,6 +104,21 @@ export default function SettingsPage() {
               <input value={profile.contactNumber} onChange={e => setProfile(p => ({ ...p, contactNumber: e.target.value }))} placeholder="e.g. +92 300 1234567" />
             </div>
           </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="settings-field">
+              <label>Gender</label>
+              <select value={profile.gender} onChange={e => setProfile(p => ({ ...p, gender: e.target.value }))} style={{ width: '100%', padding: '8px', background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
+                <option value="">— Select —</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+              </select>
+            </div>
+            <div className="settings-field">
+              <label>How should AI address you?</label>
+              <input value={profile.preferredTitle} onChange={e => setProfile(p => ({ ...p, preferredTitle: e.target.value }))} placeholder="e.g. Sir, Boss, Ma'am, Madam, Basit Sahab" />
+              <p style={{ fontSize: 10, color: '#555', marginTop: 2 }}>Your agents will use this to address you</p>
+            </div>
+          </div>
           <div className="settings-field">
             <label>About Me</label>
             <textarea rows={3} value={profile.aboutMe} onChange={e => setProfile(p => ({ ...p, aboutMe: e.target.value }))} placeholder="Tell the AI about yourself — background, working style, what you focus on..." />
@@ -118,6 +133,9 @@ export default function SettingsPage() {
 
         {/* Email & Calendar Integration */}
         <IntegrationSection userId={user?.id} />
+
+        {/* WhatsApp */}
+        <WhatsAppSection />
 
         {/* Change Password */}
         <section className="settings-section">
@@ -245,6 +263,125 @@ function IntegrationSection({ userId }) {
 
           {/* Permission Toggles */}
           <PermissionToggles userId={userId} currentPermissions={status.permissions || 'email_read,calendar_read'} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WhatsAppSection() {
+  const [waStatus, setWaStatus] = useState(null);      // user's own registration
+  const [companyWa, setCompanyWa] = useState(null);     // company bot number
+  const [waPhone, setWaPhone] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    // Load user's WhatsApp registration
+    api.get('/agents/whatsapp/status').then(res => {
+      setWaStatus(res.data);
+      if (res.data.phoneNumber) setWaPhone(res.data.phoneNumber);
+    }).catch(() => setWaStatus({ connected: false }));
+
+    // Load company's bot WhatsApp number (from tenant config)
+    api.get('/admin/whatsapp/status').then(res => {
+      if (res.data?.connected_number) setCompanyWa(res.data);
+    }).catch(() => {});
+  }, []);
+
+  const registerNumber = async () => {
+    const clean = waPhone.replace(/[\s-]/g, '');
+    if (!clean || !/^\+?\d{10,15}$/.test(clean)) {
+      setMsg('Enter a valid phone number (e.g. +923001234567)');
+      return;
+    }
+    setSaving(true); setMsg('');
+    try {
+      await api.post('/agents/whatsapp/connect', { phoneNumber: clean });
+      setMsg('Your WhatsApp number is registered! You can now message the company AI number below.');
+      setWaStatus({ connected: true, phoneNumber: clean });
+    } catch (err) { setMsg(err.response?.data?.error || 'Failed to register'); }
+    setSaving(false);
+  };
+
+  const unregisterNumber = async () => {
+    setSaving(true); setMsg('');
+    try {
+      await api.delete('/agents/whatsapp/connect');
+      setWaStatus({ connected: false });
+      setWaPhone('');
+      setMsg('Your WhatsApp number has been removed');
+    } catch { setMsg('Failed to remove'); }
+    setSaving(false);
+  };
+
+  // Don't show section if company hasn't configured WhatsApp at all
+  if (!companyWa && !waStatus?.connected) {
+    return (
+      <section className="settings-section">
+        <h2>WhatsApp</h2>
+        <p style={{ color: '#555', fontSize: 13 }}>WhatsApp is not configured for your organization yet. Contact your admin to enable it.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="settings-section">
+      <h2>WhatsApp</h2>
+      {msg && <div className={`settings-msg ${msg.includes('Failed') || msg.includes('valid') ? 'error' : ''}`} style={{ marginBottom: 10 }}>{msg}</div>}
+
+      {/* Company bot number — this is what user messages TO */}
+      {companyWa?.connected_number && (
+        <div style={{ background: '#1a2a1a', border: '1px solid #2a4a2a', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: '#4ade80', fontWeight: 600, marginBottom: 4 }}>Company AI WhatsApp Number</div>
+          <div style={{ fontSize: 18, color: '#fff', fontWeight: 600, letterSpacing: 0.5 }}>{companyWa.connected_number}</div>
+          <p style={{ fontSize: 11, color: '#6ab86a', marginTop: 4 }}>
+            Save this number and send any message to chat with {companyWa.provider === 'meta' ? 'your company AI' : 'the AI assistant'}
+          </p>
+        </div>
+      )}
+
+      {/* User's own number registration */}
+      {waStatus?.connected ? (
+        <div>
+          <div className="settings-info" style={{ marginBottom: 12 }}>
+            <div>
+              <span className="info-label">Your Registered Number</span>
+              <span style={{ color: '#eee' }}>{waStatus.phoneNumber}</span>
+            </div>
+            <div>
+              <span className="info-label">Status</span>
+              <span style={{ color: '#4ade80' }}>Active</span>
+            </div>
+          </div>
+          <p style={{ color: '#888', fontSize: 12, marginBottom: 10 }}>
+            When you send a message from this number to the company AI number above, the system identifies you and responds with your personalized data.
+            Your WhatsApp conversations also appear in the web portal.
+          </p>
+          <button className="settings-btn" onClick={unregisterNumber} disabled={saving}
+            style={{ background: 'transparent', border: '1px solid #ef4444', color: '#ef4444' }}>
+            Remove My Number
+          </button>
+        </div>
+      ) : (
+        <div>
+          <p style={{ color: '#888', fontSize: 13, marginBottom: 10 }}>
+            Register your WhatsApp number so the AI can identify you when you message the company number.
+            Without registration, the AI won't know who you are.
+          </p>
+          <div className="settings-field">
+            <label>Your WhatsApp Number</label>
+            <input
+              value={waPhone}
+              onChange={e => setWaPhone(e.target.value)}
+              placeholder="+923001234567"
+              style={{ maxWidth: 300 }}
+            />
+            <p style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Use the number your WhatsApp is registered on</p>
+          </div>
+          <button className="settings-btn" onClick={registerNumber} disabled={saving}>
+            {saving ? 'Registering...' : 'Register My Number'}
+          </button>
         </div>
       )}
     </section>

@@ -1,4 +1,7 @@
 import prisma from '../db/prisma';
+import createLogger from '../utils/logger';
+
+const log = createLogger('tokenUsage');
 
 /**
  * TokenUsageService — tracks cumulative token consumption per user per day per provider.
@@ -62,7 +65,7 @@ export async function trackUsage(
         inputTokens, outputTokens, totalTokens, estimatedCost, responseTimeMs || 0, reason);
     }
   } catch (err: any) {
-    console.error('[TokenUsage] Failed to track:', err.message);
+    log.error('Failed to track', { error: err.message });
   }
 }
 

@@ -1,9 +1,34 @@
 import { useState, useRef, useEffect } from 'react';
 import ModelSelector from './ModelSelector';
 import { useAuth } from '../context/AuthContext';
+import api from '../services/api';
 
-export default function ChatInput({ onSend, onStop, isStreaming, isFrozen, selectedProvider, onProviderChange }) {
+// Source config — label, icon emoji, tooltip
+const SOURCE_OPTIONS = [
+  { id: 'org',           label: 'Company Data',  icon: '🏢' },
+  { id: 'personal_drive', label: 'My Drive',     icon: '📁' },
+  { id: 'uploads',       label: 'My Uploads',    icon: '📎' },
+];
+
+export default function ChatInput({ onSend, onStop, isStreaming, isFrozen, selectedProvider, onProviderChange, sources = ['org'], onSourcesChange }) {
   const { appName, aiName } = useAuth();
+  const [personalAvailable, setPersonalAvailable] = useState(false);
+
+  // Check if personal data sources are available for this user
+  useEffect(() => {
+    api.get('/personal-drive/status').then(res => {
+      if (res.data?.configured) setPersonalAvailable(true);
+    }).catch(() => {});
+  }, []);
+
+  function toggleSource(id) {
+    if (!onSourcesChange) return;
+    const next = sources.includes(id)
+      ? sources.filter(s => s !== id)
+      : [...sources, id];
+    // Always keep at least one source
+    if (next.length > 0) onSourcesChange(next);
+  }
   const [text, setText] = useState('');
   const textareaRef = useRef(null);
 
@@ -49,6 +74,21 @@ export default function ChatInput({ onSend, onStop, isStreaming, isFrozen, selec
           onKeyDown={handleKey}
         />
         <div className="input-bottom">
+          {personalAvailable && (
+            <div className="source-selector">
+              {SOURCE_OPTIONS.map(opt => (
+                <button
+                  key={opt.id}
+                  className={`source-chip${sources.includes(opt.id) ? ' active' : ''}`}
+                  onClick={() => toggleSource(opt.id)}
+                  title={`${sources.includes(opt.id) ? 'Deselect' : 'Select'} ${opt.label}`}
+                  type="button"
+                >
+                  {opt.icon} {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="input-right">
             {isStreaming && (
               <button className="stop-btn" onClick={onStop} title="Stop generating">

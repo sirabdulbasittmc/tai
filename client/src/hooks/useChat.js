@@ -10,6 +10,7 @@ export default function useChat() {
   const [conversationId, setConversationId] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [clarification, setClarification] = useState(null); // { query, options }
+  const [sources, setSources] = useState(['org']); // Phase 3.3: active data sources
   const doneCalledRef = useRef(false);
   const abortRef = useRef(null);
 
@@ -204,9 +205,10 @@ export default function useChat() {
           updated[updated.length - 1] = { ...last, widgetData };
           return updated;
         });
-      }
+      },
+      sources.length > 0 ? sources : undefined,
     );
-  }, [isStreaming, selectedProvider, conversationId, loadConversations]);
+  }, [isStreaming, selectedProvider, conversationId, loadConversations, sources]);
 
   // Send with clarification — user picked an option
   const sendWithClarification = useCallback((selectedQuery) => {
@@ -253,5 +255,6 @@ export default function useChat() {
     clarification, sendWithClarification, dismissClarification,
     conversationId, conversations,
     loadConversations, loadConversation, archiveConversation,
+    sources, setSources,
   };
 }

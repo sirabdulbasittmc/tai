@@ -1,5 +1,11 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getGenAI } from './genaiClient';
 import { env } from '../config/env';
+
+export interface LayerWeights {
+  personal: number;      // 0–1: weight for user's personal data (GDrive, uploads)
+  organizational: number; // 0–1: weight for company/org data
+  domain: number;        // 0–1: weight for domain expert knowledge base (Phase 6+)
+}
 
 export interface Intent {
   type: 'quick_answer' | 'detailed_analysis' | 'dashboard' | 'export' | 'list' | 'comparison' | 'action' | 'conversational';
@@ -8,6 +14,7 @@ export interface Intent {
   tone: 'formal' | 'casual' | 'executive';
   scope: string;
   followUp: boolean;
+  layerWeights?: LayerWeights;  // Phase 4: which data layers to prioritize
 }
 
 const CLASSIFY_PROMPT = `You are an intent classifier for a business AI assistant. Return a JSON object.
@@ -18,8 +25,17 @@ const CLASSIFY_PROMPT = `You are an intent classifier for a business AI assistan
   "detail": "brief" | "moderate" | "comprehensive",
   "tone": "formal" | "casual" | "executive",
   "scope": "short description of data needed",
-  "followUp": true/false
+  "followUp": true/false,
+  "layerWeights": { "personal": 0.0-1.0, "organizational": 0.0-1.0, "domain": 0.0 }
 }
+
+LAYER WEIGHT RULES (personal + organizational + domain must sum to 1.0):
+- "show project dashboard" → personal:0.0, organizational:1.0, domain:0.0
+- "show my calendar" | "check my emails" → personal:1.0, organizational:0.0, domain:0.0
+- "what did I discuss with client" | "my notes on" → personal:0.8, organizational:0.2, domain:0.0
+- "prepare for my meeting" | "help me with this report" → personal:0.5, organizational:0.5, domain:0.0
+- "analyze company revenue" | "show all projects" → personal:0.0, organizational:1.0, domain:0.0
+- Always set domain:0.0 (domain knowledge base not active yet)
 
 TYPE RULES:
 - "dashboard": ONLY when user explicitly says "dashboard", "interactive overview", "portfolio view", or "status report"
@@ -57,7 +73,7 @@ Only use "widget" for BROAD overviews of ALL items in a category.
 
 Return ONLY the JSON object.`;
 
-export async function classifyIntent(query: string, userFormatHints?: string): Promise<Intent> {
+export async function classifyIntent(query: string, userFormatHints?: string, recentTurns?: { role: string; content: string }[]): Promise<Intent> {
   const defaultIntent: Intent = {
     type: 'detailed_analysis',
     format: 'text',
@@ -65,22 +81,33 @@ export async function classifyIntent(query: string, userFormatHints?: string): P
     tone: 'formal',
     scope: query,
     followUp: false,
+    layerWeights: { personal: 0.0, organizational: 1.0, domain: 0.0 },
   };
 
   if (!env.geminiApiKey) return defaultIntent;
 
   try {
-    const genAI = new GoogleGenerativeAI(env.geminiApiKey);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: { maxOutputTokens: 256 },
-    });
+    const ai = getGenAI();
 
     // Race against 3s timeout — if intent takes too long, use default
     const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000));
     const today = new Date().toISOString().split('T')[0]; // e.g., 2026-03-30
     const hints = userFormatHints ? `\nUSER PREFERENCES (learned from past interactions):\n${userFormatHints}\n` : '';
-    const classify = model.generateContent(`Today's date: ${today}\nQuery: "${query}"\n${hints}\n${CLASSIFY_PROMPT}`);
+
+    // Include last 3 conversation turns so follow-up queries retain topic context
+    let conversationContext = '';
+    if (recentTurns && recentTurns.length > 0) {
+      const turns = recentTurns.slice(0, 6) // max 3 pairs (user+assistant)
+        .map(t => `${t.role}: ${t.content.slice(0, 200)}`)
+        .join('\n');
+      conversationContext = `\nRECENT CONVERSATION (use this to understand follow-up context):\n${turns}\n`;
+    }
+
+    const classify = ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: `Today's date: ${today}\nQuery: "${query}"\n${conversationContext}${hints}\n${CLASSIFY_PROMPT}`,
+      config: { maxOutputTokens: 256 },
+    });
     const result = await Promise.race([classify, timeout]);
 
     if (!result) {
@@ -88,7 +115,7 @@ export async function classifyIntent(query: string, userFormatHints?: string): P
       return defaultIntent;
     }
 
-    const text = result.response.text().trim();
+    const text = (result.text ?? '').trim();
 
     // Extract JSON from response (handle markdown code blocks)
     const jsonMatch = text.match(/\{[\s\S]*\}/);

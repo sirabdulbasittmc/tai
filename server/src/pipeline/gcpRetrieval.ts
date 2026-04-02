@@ -6,7 +6,12 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 import { BigQuery } from '@google-cloud/bigquery';
-import { VertexAI } from '@google-cloud/vertexai';
+import { getGenAI } from '../services/genaiClient';
+import { isFeatureEnabled } from '../services/featureFlagService';
+import { queryVectorSearch } from './vertexVectorSearch';
+import createLogger from '../utils/logger';
+
+const log = createLogger('gcpRetrieval');
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const PROJECT_ID = process.env.GCP_PROJECT_ID || 'tmcai-491811';
@@ -16,16 +21,10 @@ const BQ_TABLE   = process.env.BQ_TABLE       || 'chunks';
 
 // ─── CLIENTS ──────────────────────────────────────────────────────────────────
 let bqClient: BigQuery | null = null;
-let vertexClient: VertexAI | null = null;
 
 function getBQ(): BigQuery {
   if (!bqClient) bqClient = new BigQuery({ projectId: PROJECT_ID });
   return bqClient;
-}
-
-function getVertex(): VertexAI {
-  if (!vertexClient) vertexClient = new VertexAI({ project: PROJECT_ID, location: LOCATION });
-  return vertexClient;
 }
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -103,7 +102,7 @@ function isConversationalQuery(query: string): boolean {
          EXTERNAL_PATTERNS.some(p => p.test(query.trim()));
 }
 
-// ─── FIX 3: QUICK DOMAIN MATCH (skip Vertex AI for obvious queries) ──────────
+// ─── FIX 3: QUICK DOMAIN MATCH (skip LLM call for obvious queries) ──────────
 
 function quickDomainMatch(query: string): string | null {
   const q = query.toLowerCase();
@@ -146,9 +145,9 @@ function getTopK(userQuery: string, filters: Filters): number {
   if (q.includes('dashboard') || q.includes('summary') ||
       q.includes('overview') || q.includes('portfolio') ||
       q.includes('all projects') || q.includes('everything')) {
-    // Projects: 47 items fit in 3 chunks. Employees: 661 need more but dashboard shows top 20.
+    // Projects: 47 items fit in 3 chunks. Employees: 661 need more chunks for meaningful stats.
     if (filters.domain === 'projects') return 5;
-    if (filters.domain === 'employees') return 5;
+    if (filters.domain === 'employees') return 8;
     return 6;
   }
 
@@ -160,6 +159,10 @@ function getTopK(userQuery: string, filters: Filters): number {
   if (q.includes('list') || q.includes('show all') || q.includes('give me all'))
     return 5;
 
+  // Employee queries need more data for meaningful statistics
+  if (filters.domain === 'employees')
+    return 6;
+
   return 4;
 }
 
@@ -168,7 +171,7 @@ function getTopK(userQuery: string, filters: Filters): number {
 function capContext(context: string, maxTokens = 6000): string {
   const maxChars = maxTokens * 4;
   if (context.length <= maxChars) return context;
-  console.log(`[GCP Retrieval] Context capped from ${context.length} to ${maxChars} chars`);
+  log.info('Context capped', { from: context.length, to: maxChars });
   // Cut at last newline to avoid breaking a row
   const truncated = context.substring(0, maxChars);
   const lastNewline = truncated.lastIndexOf('\n');
@@ -182,15 +185,16 @@ async function extractFilters(userQuery: string): Promise<Filters> {
   // Try quick domain match first — no API call needed
   const quickDomain = quickDomainMatch(userQuery);
   if (quickDomain) {
-    console.log('[GCP Retrieval] Quick domain match:', quickDomain);
+    log.info('Quick domain match', { domain: quickDomain });
     return { domain: quickDomain, account: null, geography: null, risk_flag: null, department: null };
   }
 
-  // Fall through to Vertex AI for complex queries
+  // Fall through to Gemini for complex queries
   try {
-    const model = getVertex().getGenerativeModel({ model: 'gemini-2.5-flash' });
-    const result = await model.generateContent(`
-Extract search filters from this query. Return JSON only, no explanation, no markdown.
+    const ai = getGenAI();
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: `Extract search filters from this query. Return JSON only, no explanation, no markdown.
 Query: "${userQuery}"
 Return exactly this structure:
 {
@@ -205,16 +209,16 @@ RULES:
 - Only set account if a specific company name is mentioned.
 - ONLY set risk_flag=true if the user EXPLICITLY asks for "critical risks" or "at risk". For general queries, set risk_flag=null.
 - Set department if a specific department is mentioned.
-- When in doubt, set fields to null (broader is better).
-    `);
+- When in doubt, set fields to null (broader is better).`,
+    });
 
-    const text = result.response?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const text = (result.text ?? '').trim() || '{}';
     const clean = text.replace(/```json|```/g, '').trim();
     const filters = JSON.parse(clean);
-    console.log('[GCP Retrieval] Vertex AI filters:', JSON.stringify(filters));
+    log.info('Gemini filters', { filters });
     return filters;
   } catch (e: any) {
-    console.error('[GCP Retrieval] Vertex AI filter extraction failed:', e.message);
+    log.error('Gemini filter extraction failed', { error: e.message });
     // Fallback: return quick match or empty
     return { domain: quickDomain, account: null, geography: null, risk_flag: null, department: null };
   }
@@ -263,10 +267,10 @@ async function getChunksByMetadata(filters: Partial<Filters>): Promise<ChunkRow[
       params,
       types: filters.account ? { account: 'STRING' } : undefined,
     });
-    console.log('[GCP Retrieval] BQ candidates:', rows.length);
+    log.info('BQ candidates', { count: rows.length });
     return rows as ChunkRow[];
   } catch (e: any) {
-    console.error('[GCP Retrieval] BigQuery failed:', e.message);
+    log.error('BigQuery failed', { error: e.message });
     return [];
   }
 }
@@ -275,15 +279,14 @@ async function getChunksByMetadata(filters: Partial<Filters>): Promise<ChunkRow[
 
 async function embedQuery(text: string): Promise<number[] | null> {
   try {
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) return null;
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
-    const result = await model.embedContent(text);
-    return result.embedding?.values || null;
+    const ai = getGenAI();
+    const result = await ai.models.embedContent({
+      model: 'gemini-embedding-001',
+      contents: text,
+    });
+    return result.embeddings?.[0]?.values || null;
   } catch (e: any) {
-    console.error('[GCP Retrieval] Embedding failed:', e.message);
+    log.error('Embedding failed', { error: e.message });
     return null;
   }
 }
@@ -307,6 +310,93 @@ function rankChunks(queryEmbedding: number[] | null, chunks: ChunkRow[], topK: n
   return scored.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, topK);
 }
 
+// ─── STEP 4a: BQ FETCH BY IDS (Phase 2.7 — Vector Search results lookup) ────
+
+async function getChunksByIds(chunkIds: string[]): Promise<ChunkRow[]> {
+  if (chunkIds.length === 0) return [];
+  try {
+    const placeholders = chunkIds.map((_, i) => `@id${i}`).join(', ');
+    const params: Record<string, string> = {};
+    chunkIds.forEach((id, i) => { params[`id${i}`] = id; });
+
+    const query = `
+      SELECT chunk_id, file_id, file_name, sheet_name, domain, account, geography,
+             risk_flag, content, content_preview, row_count, last_updated
+      FROM \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\`
+      WHERE chunk_id IN (${placeholders})
+    `;
+
+    const [rows] = await getBQ().query({ query, params });
+    // Re-order to match the Vector Search ranking order
+    const rowMap = new Map((rows as ChunkRow[]).map(r => [r.chunk_id, r]));
+    return chunkIds.map(id => rowMap.get(id)).filter(Boolean) as ChunkRow[];
+  } catch (e: any) {
+    log.error('BQ fetch-by-ids failed', { error: e.message });
+    return [];
+  }
+}
+
+// ─── STEP 4b: BQ SEMANTIC SEARCH (Phase 2.2) ───────────────────────────────
+
+async function semanticSearchBQ(
+  queryEmbedding: number[],
+  filters: Partial<Filters>,
+  topK: number,
+): Promise<ChunkRow[]> {
+  const conditions: string[] = [];
+  const params: Record<string, any> = { queryEmbedding, topK };
+  const types: Record<string, any> = { queryEmbedding: ['FLOAT64'], topK: 'INT64' };
+
+  if (filters.domain) {
+    conditions.push('domain = @domain');
+    params.domain = filters.domain;
+    types.domain = 'STRING';
+  }
+  if (filters.account) {
+    conditions.push('LOWER(account) LIKE LOWER(@account)');
+    params.account = '%' + filters.account + '%';
+    types.account = 'STRING';
+  }
+  if (filters.geography) {
+    conditions.push('geography = @geography');
+    params.geography = filters.geography;
+    types.geography = 'STRING';
+  }
+  if (filters.risk_flag === true) {
+    conditions.push('risk_flag = TRUE');
+  }
+  if (filters.department) {
+    conditions.push('LOWER(content) LIKE LOWER(@department)');
+    params.department = '%' + filters.department + '%';
+    types.department = 'STRING';
+  }
+
+  // Only search rows that have embeddings
+  conditions.push('embedding IS NOT NULL');
+  conditions.push('ARRAY_LENGTH(embedding) > 0');
+
+  const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+  const query = `
+    SELECT chunk_id, file_id, file_name, sheet_name, domain, account, geography,
+           risk_flag, content, content_preview, row_count, last_updated,
+           ML.DISTANCE(embedding, @queryEmbedding, 'COSINE') as similarity
+    FROM \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\`
+    ${whereClause}
+    ORDER BY similarity ASC
+    LIMIT @topK
+  `;
+
+  try {
+    const [rows] = await getBQ().query({ query, params, types });
+    log.info('BQ semantic search', { count: rows.length, topK });
+    return rows as ChunkRow[];
+  } catch (e: any) {
+    log.error('BQ semantic search failed, falling back to in-memory', { error: e.message });
+    return []; // caller will fall back to in-memory ranking
+  }
+}
+
 // ─── STEP 5: BUILD CONTEXT ──────────────────────────────────────────────────
 
 function buildContext(chunks: ChunkRow[]): string | null {
@@ -320,13 +410,13 @@ function buildContext(chunks: ChunkRow[]): string | null {
 
 // ─── MAIN: retrieveContext ──────────────────────────────────────────────────
 
-export async function retrieveContext(userQuery: string): Promise<RetrievalResult> {
-  console.log('[GCP Retrieval] Query:', userQuery);
+export async function retrieveContext(userQuery: string, domainHint?: string | null): Promise<RetrievalResult> {
+  log.info('Query', { query: userQuery, domainHint });
   const startTime = Date.now();
 
   // FIX 1: Skip BQ for conversational queries
   if (isConversationalQuery(userQuery)) {
-    console.log('[GCP Retrieval] Conversational — skipping BQ');
+    log.info('Conversational — skipping BQ');
     return { context: null, sources: [], chunkCount: 0, filters: { domain: null, account: null, geography: null, risk_flag: null, department: null }, elapsedMs: 0 };
   }
 
@@ -339,7 +429,7 @@ export async function retrieveContext(userQuery: string): Promise<RetrievalResul
       });
       if (summaryRows.length > 0) {
         const elapsed = Date.now() - startTime;
-        console.log(`[GCP Retrieval] Count query — using data_summary chunk (${elapsed}ms)`);
+        log.info('Count query — using data_summary chunk', { elapsedMs: elapsed });
         const summaryChunk = summaryRows[0] as ChunkRow;
         return {
           context: `[Source: Data Summary — exact counts]\n${summaryChunk.content}`,
@@ -350,34 +440,75 @@ export async function retrieveContext(userQuery: string): Promise<RetrievalResul
         };
       }
     } catch (e: any) {
-      console.log('[GCP Retrieval] data_summary not found, falling back to full retrieval');
+      log.info('data_summary not found, falling back to full retrieval');
     }
   }
 
   // Step 1: Extract filters (quick match first, then Vertex AI)
   const filters = await extractFilters(userQuery);
 
+  // Apply domain hint from conversation context (follow-up queries)
+  if (!filters.domain && domainHint) {
+    log.info('Applying domain hint from conversation context', { domainHint });
+    filters.domain = domainHint;
+  }
+
   // Step 2: BigQuery metadata filter
   let candidates = await getChunksByMetadata(filters);
 
   // Fallback: domain only
   if (candidates.length === 0 && filters.domain) {
-    console.log('[GCP Retrieval] No results with full filters — trying domain only');
+    log.info('No results with full filters — trying domain only');
     candidates = await getChunksByMetadata({ domain: filters.domain });
   }
 
   // Fallback: recent chunks
   if (candidates.length === 0) {
-    console.log('[GCP Retrieval] No domain match — fetching recent chunks');
+    log.info('No domain match — fetching recent chunks');
     candidates = await getChunksByMetadata({});
   }
 
   // FIX 2: Dynamic topK
-  const topK = Math.min(getTopK(userQuery, filters), candidates.length);
+  const topK = Math.min(getTopK(userQuery, filters), candidates.length || 10);
 
   // Step 3: Embed + rank
   const queryEmbedding = await embedQuery(userQuery);
-  const topChunks = rankChunks(queryEmbedding, candidates, topK);
+
+  let topChunks: ChunkRow[];
+  const [useVectorSearch, useBQSearch] = await Promise.all([
+    isFeatureEnabled('GLOBAL', 'ff_vector_search_enabled', false),
+    isFeatureEnabled('GLOBAL', 'ff_bq_semantic_search', false),
+  ]);
+
+  if (useVectorSearch && queryEmbedding) {
+    // Phase 2.7: Vertex AI Vector Search — sub-second ANN lookup
+    log.info('Using Vertex AI Vector Search (ff_vector_search_enabled=true)');
+    const vsResults = await queryVectorSearch(queryEmbedding, topK, { domain: filters.domain || undefined });
+    if (vsResults.length > 0) {
+      const chunkIds = vsResults.map(r => r.chunkId);
+      topChunks = await getChunksByIds(chunkIds);
+      // Attach scores from Vector Search
+      const scoreMap = new Map(vsResults.map(r => [r.chunkId, r.score]));
+      topChunks = topChunks.map(c => ({ ...c, score: scoreMap.get(c.chunk_id) ?? 0 }));
+    } else {
+      log.info('Vector Search returned 0 results, falling back to BQ cosine');
+      topChunks = useBQSearch
+        ? await semanticSearchBQ(queryEmbedding, filters, topK)
+        : rankChunks(queryEmbedding, candidates, topK);
+      if (topChunks.length === 0) topChunks = rankChunks(queryEmbedding, candidates, topK);
+    }
+  } else if (useBQSearch && queryEmbedding) {
+    // Phase 2.2: BQ ML.DISTANCE server-side cosine similarity
+    log.info('Using BQ semantic search (ff_bq_semantic_search=true)');
+    topChunks = await semanticSearchBQ(queryEmbedding, filters, topK);
+    if (topChunks.length === 0) {
+      log.info('BQ semantic search returned 0 results, falling back to in-memory');
+      topChunks = rankChunks(queryEmbedding, candidates, topK);
+    }
+  } else {
+    // Default: in-memory cosine similarity
+    topChunks = rankChunks(queryEmbedding, candidates, topK);
+  }
 
   // Step 4: Build context
   let context = buildContext(topChunks);
@@ -386,7 +517,7 @@ export async function retrieveContext(userQuery: string): Promise<RetrievalResul
   if (context) context = capContext(context);
 
   const elapsed = Date.now() - startTime;
-  console.log(`[GCP Retrieval] Done in ${elapsed}ms — ${topChunks.length} chunks, ~${Math.round((context || '').length / 4)} tokens`);
+  log.info('Done', { elapsedMs: elapsed, chunks: topChunks.length, estimatedTokens: Math.round((context || '').length / 4) });
 
   return {
     context,

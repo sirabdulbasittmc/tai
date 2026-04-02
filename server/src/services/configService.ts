@@ -1,17 +1,52 @@
 import crypto from 'crypto';
 import prisma from '../db/prisma';
+import createLogger from '../utils/logger';
+
+const log = createLogger('config');
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
 
-function getEncryptionKey(): Buffer {
+// Cached encryption key — loaded once, reused for all encrypt/decrypt operations
+let cachedKey: Buffer | null = null;
+
+/**
+ * Reads ENCRYPTION_KEY from GCP Secret Manager in production,
+ * falls back to environment variable in development.
+ * Caches the key after first load for performance.
+ */
+async function getEncryptionKey(): Promise<Buffer> {
+  if (cachedKey) return cachedKey;
+
+  if (process.env.NODE_ENV === 'production' && process.env.GCP_PROJECT_ID) {
+    try {
+      const { SecretManagerServiceClient } = await import('@google-cloud/secret-manager');
+      const client = new SecretManagerServiceClient();
+      const projectId = process.env.GCP_PROJECT_ID || 'tmcai-491811';
+      const [version] = await client.accessSecretVersion({
+        name: `projects/${projectId}/secrets/tmcai-encryption-key/versions/latest`,
+      });
+      const secret = version.payload?.data?.toString();
+      if (!secret || secret.length < 32) {
+        throw new Error('ENCRYPTION_KEY from Secret Manager is invalid (must be 32+ chars)');
+      }
+      cachedKey = Buffer.from(secret.slice(0, 32), 'utf-8');
+      log.info('Encryption key loaded from GCP Secret Manager');
+      return cachedKey;
+    } catch (err: any) {
+      log.error('Secret Manager failed, falling back to env var', { error: err.message });
+    }
+  }
+
+  // Dev or fallback: read from environment variable
   const key = process.env.ENCRYPTION_KEY;
   if (!key || key.length < 32) throw new Error('ENCRYPTION_KEY must be set (at least 32 characters)');
-  return Buffer.from(key.slice(0, 32), 'utf-8');
+  cachedKey = Buffer.from(key.slice(0, 32), 'utf-8');
+  return cachedKey;
 }
 
-function encrypt(plaintext: string): string {
-  const key = getEncryptionKey();
+export async function encrypt(plaintext: string): Promise<string> {
+  const key = await getEncryptionKey();
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
   let encrypted = cipher.update(plaintext, 'utf-8', 'base64');
@@ -20,8 +55,8 @@ function encrypt(plaintext: string): string {
   return `${iv.toString('base64')}:${authTag.toString('base64')}:${encrypted}`;
 }
 
-function decrypt(encryptedValue: string): string {
-  const key = getEncryptionKey();
+export async function decrypt(encryptedValue: string): Promise<string> {
+  const key = await getEncryptionKey();
   const parts = encryptedValue.split(':');
   if (parts.length !== 3) throw new Error('Invalid encrypted value format');
   const iv = Buffer.from(parts[0], 'base64');
@@ -37,13 +72,13 @@ export async function getConfig(clientNumber: string, key: string): Promise<stri
   const row = await prisma.systemConfig.findUnique({ where: { clientNumber_key: { clientNumber, key } } });
   if (!row) return null;
   if (row.isSensitive) {
-    try { return decrypt(row.value); } catch { return null; }
+    try { return await decrypt(row.value); } catch { return null; }
   }
   return row.value;
 }
 
 export async function setConfig(clientNumber: string, key: string, value: string, sensitive = false, description?: string): Promise<void> {
-  const storedValue = sensitive ? encrypt(value) : value;
+  const storedValue = sensitive ? await encrypt(value) : value;
   await prisma.systemConfig.upsert({
     where: { clientNumber_key: { clientNumber, key } },
     update: { value: storedValue, isSensitive: sensitive, description },

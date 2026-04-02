@@ -23,6 +23,11 @@ export default function IconRail({ onNewChat, onToggleHistory }) {
         </svg>
       </button>
       <div className="rail-spacer" />
+      <button className="rail-btn" title="My Team" onClick={() => navigate('/agents')}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+          <path d="M12 2a4 4 0 014 4v1a4 4 0 01-8 0V6a4 4 0 014-4z" /><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="18" cy="8" r="2" /><circle cx="6" cy="8" r="2" />
+        </svg>
+      </button>
       <button className="rail-btn" title="Scheduled Reports" onClick={() => navigate('/schedules')}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
           <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
