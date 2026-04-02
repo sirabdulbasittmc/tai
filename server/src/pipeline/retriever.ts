@@ -2,7 +2,11 @@ import { DataConnector } from '../connectors/DataConnector';
 import { chunkDocuments } from './chunker';
 import { embedText, embedBatch, getEmbeddingModel } from './embedder';
 import { vectorStore } from './vectorStore';
-import { SearchResult } from '../types';
+import { Chunk, SearchResult } from '../types';
+import createLogger from '../utils/logger';
+import { isFeatureEnabled } from '../services/featureFlagService';
+
+const log = createLogger('retriever');
 
 let dataLastUpdated: string | null = null;
 let lastIndexTime: Date | null = null;
@@ -17,13 +21,42 @@ let isIndexing = false;
  */
 
 /**
+ * Remove duplicate chunks that share the same contentHash but come from
+ * different sources (e.g., Drive and BigQuery).  Keeps the first occurrence.
+ */
+function deduplicateChunks(chunks: Chunk[]): Chunk[] {
+  const seen = new Set<string>();
+  const deduped: Chunk[] = [];
+  let dupeCount = 0;
+
+  for (const chunk of chunks) {
+    const hash = chunk.metadata.contentHash;
+    if (seen.has(hash)) {
+      dupeCount++;
+      continue;
+    }
+    seen.add(hash);
+    deduped.push(chunk);
+  }
+
+  if (dupeCount > 0) {
+    log.info('Cross-source dedup removed duplicate chunks', { removed: dupeCount, remaining: deduped.length });
+  }
+
+  return deduped;
+}
+
+/**
  * Index documents from all provided connectors.
  * Fetches → chunks → embeds → stores vectors.
  * Only re-embeds chunks whose content has changed (hash-based dedup).
+ *
+ * @param clientNumber  Tenant identifier — used for feature flag lookups.
+ *                      When omitted, dedup-on-index is skipped.
  */
-export async function indexDocuments(connectors: DataConnector[], forceRebuild = false): Promise<void> {
+export async function indexDocuments(connectors: DataConnector[], forceRebuild = false, clientNumber?: string): Promise<void> {
   if (isIndexing) {
-    console.log('[Retriever] Indexing already in progress, skipping...');
+    log.info('Indexing already in progress, skipping');
     return;
   }
 
@@ -34,7 +67,7 @@ export async function indexDocuments(connectors: DataConnector[], forceRebuild =
     const allDocuments = [];
     for (const connector of connectors) {
       if (!connector.isReady()) {
-        console.log(`[Retriever] Connector "${connector.name}" not ready, skipping`);
+        log.info('Connector not ready, skipping', { connector: connector.name });
         continue;
       }
       const docs = await connector.fetchDocuments();
@@ -42,7 +75,7 @@ export async function indexDocuments(connectors: DataConnector[], forceRebuild =
     }
 
     if (allDocuments.length === 0) {
-      console.log('[Retriever] No documents fetched from any connector');
+      log.info('No documents fetched from any connector');
       return;
     }
 
@@ -53,7 +86,17 @@ export async function indexDocuments(connectors: DataConnector[], forceRebuild =
     }
 
     // 2. Chunk documents
-    const chunks = chunkDocuments(allDocuments);
+    let chunks = chunkDocuments(allDocuments);
+
+    // 2.5  Cross-source dedup — if the same content arrives from both Drive
+    //       and BQ (or any two connectors), keep only the first occurrence.
+    //       Controlled by feature flag `ff_dedup_on_index`.
+    if (clientNumber) {
+      const dedupEnabled = await isFeatureEnabled(clientNumber, 'ff_dedup_on_index', true);
+      if (dedupEnabled) {
+        chunks = deduplicateChunks(chunks);
+      }
+    }
 
     // 3. Purge stale chunks (from deleted/renamed documents)
     const currentHashes = new Set(chunks.map(c => c.metadata.contentHash));
@@ -67,33 +110,33 @@ export async function indexDocuments(connectors: DataConnector[], forceRebuild =
     const newChunks = chunks.filter(c => !vectorStore.hasChunk(c.metadata.contentHash));
 
     if (newChunks.length === 0) {
-      console.log('[Retriever] All chunks up-to-date, no re-embedding needed');
+      log.info('All chunks up-to-date, no re-embedding needed');
       lastIndexTime = new Date();
       return;
     }
 
     // If more than half the chunks changed, rebuild entirely for consistency
     if (newChunks.length > chunks.length * 0.5) {
-      console.log(`[Retriever] ${newChunks.length}/${chunks.length} chunks changed — full rebuild`);
+      log.info('Chunks changed — full rebuild', { changed: newChunks.length, total: chunks.length });
       vectorStore.clear();
       const vectors = await embedBatch(chunks.map(c => c.content));
       const result = vectorStore.upsert(chunks, vectors);
-      console.log(`[Retriever] Full rebuild: ${result.added} vectors added`);
+      log.info('Full rebuild complete', { added: result.added });
     } else {
       // Incremental: only embed new/changed chunks
-      console.log(`[Retriever] ${newChunks.length} new chunks to embed (${chunks.length - newChunks.length} cached)`);
+      log.info('Incremental embed', { newChunks: newChunks.length, cached: chunks.length - newChunks.length });
       const vectors = await embedBatch(newChunks.map(c => c.content));
       const result = vectorStore.upsert(newChunks, vectors);
-      console.log(`[Retriever] Incremental update: ${result.added} added, ${result.skipped} skipped`);
+      log.info('Incremental update complete', { added: result.added, skipped: result.skipped });
     }
 
     // 4. Persist to disk
     vectorStore.save();
     lastIndexTime = new Date();
 
-    console.log(`[Retriever] Indexing complete: ${vectorStore.size} vectors total`);
+    log.info('Indexing complete', { vectorsTotal: vectorStore.size });
   } catch (err: any) {
-    console.error('[Retriever] Indexing failed:', err.message);
+    log.error('Indexing failed', { error: err.message });
   } finally {
     isIndexing = false;
   }
@@ -105,14 +148,14 @@ export async function indexDocuments(connectors: DataConnector[], forceRebuild =
  */
 export async function retrieve(query: string, topK = 10, minScore = 0.3): Promise<SearchResult[]> {
   if (vectorStore.size === 0) {
-    console.log('[Retriever] Vector store empty — returning no results');
+    log.info('Vector store empty — returning no results');
     return [];
   }
 
   const queryVector = await embedText(query);
   const results = vectorStore.search(queryVector, topK, minScore);
 
-  console.log(`[Retriever] Query: "${query.slice(0, 60)}..." → ${results.length} results (top score: ${results[0]?.score.toFixed(3) || 'N/A'})`);
+  log.info('Query results', { query: query.slice(0, 60), results: results.length, topScore: results[0]?.score.toFixed(3) || 'N/A' });
   return results;
 }
 
@@ -141,7 +184,7 @@ export function buildContextFromResults(results: SearchResult[], maxChars = 5000
   }
 
   if (includedCount < results.length) {
-    console.log(`[Retriever] Context trimming: included ${includedCount}/${results.length} chunks (${context.length} chars)`);
+    log.info('Context trimming', { included: includedCount, total: results.length, chars: context.length });
   }
 
   return context;

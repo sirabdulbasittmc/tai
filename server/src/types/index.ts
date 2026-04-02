@@ -7,10 +7,13 @@ export interface Section {
   bodyLower: string;
 }
 
+export type DataSource = 'org' | 'personal_drive' | 'uploads';
+
 export interface ChatRequest {
   message: string;
   provider: 'gemini' | 'gemini-flash' | 'groq' | 'claude' | 'openai' | 'openrouter';
-  conversationId?: number;  // If provided, appends to existing conversation
+  conversationId?: number;    // If provided, appends to existing conversation
+  sources?: DataSource[];     // Phase 3.3: which data sources to query (default: all enabled)
 }
 
 export interface SSEChunk {

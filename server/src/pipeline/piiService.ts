@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getGenAI } from '../services/genaiClient';
 import { env } from '../config/env';
 import { PIIEntity, PIIMask } from '../types';
 
@@ -164,11 +164,13 @@ async function detectEntities(text: string): Promise<{ type: string; value: stri
   // Limit text size for NER call — only send first 30K chars
   const truncatedText = text.length > 30000 ? text.slice(0, 30000) : text;
 
-  const genAI = new GoogleGenerativeAI(env.geminiApiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+  const ai = getGenAI();
 
-  const result = await model.generateContent(NER_PROMPT + truncatedText);
-  const response = result.response.text().trim();
+  const result = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: NER_PROMPT + truncatedText,
+  });
+  const response = (result.text ?? '').trim();
 
   // Extract JSON array from response
   const jsonMatch = response.match(/\[[\s\S]*\]/);

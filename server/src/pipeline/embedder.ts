@@ -1,18 +1,23 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { env } from '../config/env';
+import createLogger from '../utils/logger';
 
-const EMBEDDING_MODEL = 'gemini-embedding-001';
+const log = createLogger('embedder');
+
+import { MODEL_EMBEDDING } from '../config/models';
+const EMBEDDING_MODEL = MODEL_EMBEDDING;
 const BATCH_SIZE = 50;  // Gemini embedding API batch limit
 
-let genAI: GoogleGenerativeAI | null = null;
+// Embedder uses its own client because it may have a separate API key
+let embedClient: GoogleGenAI | null = null;
 
-function getClient(): GoogleGenerativeAI {
-  if (!genAI) {
+function getClient(): GoogleGenAI {
+  if (!embedClient) {
     const key = env.geminiEmbedKey;
     if (!key) throw new Error('GEMINI_API_KEY or GEMINI_API_KEY_EMBED required for embeddings');
-    genAI = new GoogleGenerativeAI(key);
+    embedClient = new GoogleGenAI({ apiKey: key });
   }
-  return genAI;
+  return embedClient;
 }
 
 /**
@@ -20,9 +25,11 @@ function getClient(): GoogleGenerativeAI {
  */
 export async function embedText(text: string): Promise<number[]> {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: EMBEDDING_MODEL });
-  const result = await model.embedContent(text);
-  return result.embedding.values;
+  const result = await client.models.embedContent({
+    model: EMBEDDING_MODEL,
+    contents: text,
+  });
+  return result.embeddings?.[0]?.values || [];
 }
 
 /**
@@ -31,24 +38,26 @@ export async function embedText(text: string): Promise<number[]> {
  */
 export async function embedBatch(texts: string[]): Promise<number[][]> {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: EMBEDDING_MODEL });
   const allVectors: number[][] = [];
 
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
     const results = await Promise.all(
-      batch.map(text => model.embedContent(text))
+      batch.map(text => client.models.embedContent({
+        model: EMBEDDING_MODEL,
+        contents: text,
+      }))
     );
     for (const result of results) {
-      allVectors.push(result.embedding.values);
+      allVectors.push(result.embeddings?.[0]?.values || []);
     }
 
     if (i + BATCH_SIZE < texts.length) {
-      console.log(`[Embedder] Embedded ${Math.min(i + BATCH_SIZE, texts.length)}/${texts.length} chunks...`);
+      log.info('Embedding progress', { done: Math.min(i + BATCH_SIZE, texts.length), total: texts.length });
     }
   }
 
-  console.log(`[Embedder] Generated ${allVectors.length} embeddings (model: ${EMBEDDING_MODEL}, dims: ${allVectors[0]?.length || 0})`);
+  log.info('Generated embeddings', { count: allVectors.length, model: EMBEDDING_MODEL, dims: allVectors[0]?.length || 0 });
   return allVectors;
 }
 

@@ -5,6 +5,10 @@ export const MODEL_GEMINI_FLASH = 'gemini-2.5-flash';
 // gemini-2.0-flash-lite removed — using 2.5-flash with thinkingBudget:0 instead
 export const MODEL_GROQ = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
+// Embedding model — single source of truth (used by embedder.ts, gcpRetrieval.ts)
+export const MODEL_EMBEDDING = 'gemini-embedding-001';
+export const EMBEDDING_DIMS = 3072;  // Verified output dimensions for gemini-embedding-001
+
 // OpenRouter free models — tried in order, auto-fallback
 export const FREE_MODELS = [
   'nvidia/nemotron-3-super-120b-a12b:free',

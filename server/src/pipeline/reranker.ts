@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getGenAI } from '../services/genaiClient';
 import { env } from '../config/env';
 import { SearchResult } from '../types';
 
@@ -49,12 +49,14 @@ export async function rerankResults(
       return `[Chunk ${i + 1}]: ${preview}`;
     }).join('\n\n');
 
-    const genAI = new GoogleGenerativeAI(env.geminiApiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const ai = getGenAI();
 
     const prompt = RERANK_PROMPT + `"${query}"\n\nChunks:\n${chunkSummaries}`;
-    const result = await model.generateContent(prompt);
-    const response = result.response.text().trim();
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+    const response = (result.text ?? '').trim();
 
     // Parse scores
     const jsonMatch = response.match(/\[[\d\s,.]+\]/);

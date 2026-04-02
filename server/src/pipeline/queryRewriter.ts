@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getGenAI } from '../services/genaiClient';
 import { env } from '../config/env';
 import { Intent } from '../services/intentService';
 
@@ -60,11 +60,13 @@ export async function rewriteQuery(query: string, intent?: Intent): Promise<stri
   if (!env.geminiApiKey) return query;
 
   try {
-    const genAI = new GoogleGenerativeAI(env.geminiApiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const ai = getGenAI();
 
-    const result = await model.generateContent(REWRITE_PROMPT + `"${query}"`);
-    const rewritten = result.response.text().trim().replace(/^["']|["']$/g, '');
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: REWRITE_PROMPT + `"${query}"`,
+    });
+    const rewritten = (result.text ?? '').trim().replace(/^["']|["']$/g, '');
 
     if (rewritten && rewritten.length > query.length) {
       console.log(`[QueryRewriter] "${query}" → "${rewritten.slice(0, 80)}..."`);
